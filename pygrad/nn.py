@@ -179,16 +179,20 @@ def binary_cross_entropy(predictions, targets):
     targets = [t if isinstance(t, Value) else Value(t) for t in targets]
     eps = 1e-7  # Small constant to avoid log(0)
     
+    # Create epsilon Values once for reuse
+    eps_value = Value(eps)
+    one_value = Value(1.0)
+    
     loss = Value(0.0)
     for pred, target in zip(predictions, targets):
         # Clamp predictions to avoid log(0) but keep them in the computational graph
-        # We add/subtract a tiny constant instead of creating a new Value
-        safe_pred = pred + Value(eps)
-        one_minus_pred = Value(1.0) - pred + Value(eps)
+        # We add a tiny constant instead of creating a new Value each iteration
+        safe_pred = pred + eps_value
+        one_minus_pred = (one_value - pred) + eps_value
         
         # BCE = -[y*log(p) + (1-y)*log(1-p)]
         term1 = target * safe_pred.log()
-        term2 = (Value(1.0) - target) * one_minus_pred.log()
+        term2 = (one_value - target) * one_minus_pred.log()
         loss = loss - (term1 + term2)
     
     return loss * (1.0 / len(predictions))

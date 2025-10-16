@@ -61,7 +61,7 @@ class Value:
     
     def __pow__(self, other):
         """Power operation (only supports int/float exponents)."""
-        assert isinstance(other, (int, float)), "only supporting int/float powers for now"
+        assert isinstance(other, (int, float)), f"Power operation only supports int or float exponents, got {type(other).__name__}"
         out = Value(self.data ** other, (self,), f'**{other}')
         
         def _backward():
