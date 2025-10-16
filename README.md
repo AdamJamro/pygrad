@@ -1,1 +1,248 @@
-# pygrad
+# PyGrad
+
+A lightweight neural network library with automatic differentiation (autograd) and symbolic gradient calculation, implemented in pure Python.
+
+## Features
+
+- **Autograd Engine**: Automatic differentiation through computational graph tracking
+- **Symbolic Gradient Calculation**: Computes gradients symbolically using backpropagation
+- **Neural Network Building Blocks**: Neurons, Layers, and Multi-Layer Perceptrons (MLPs)
+- **Activation Functions**: ReLU, Tanh, Sigmoid
+- **Loss Functions**: MSE, Binary Cross Entropy
+- **Pure Python**: No external dependencies for core functionality
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/AdamJamro/pygrad.git
+cd pygrad
+
+# Install in development mode
+pip install -e .
+
+# Or install with development dependencies
+pip install -e ".[dev]"
+```
+
+## Quick Start
+
+### Basic Autograd Example
+
+```python
+from pygrad import Value
+
+# Create computational graph
+x = Value(3.0)
+y = Value(2.0)
+z = (x + y) * (x - y)
+
+# Compute gradients
+z.backward()
+
+print(f"z = {z.data}")  # z = 5.0
+print(f"∂z/∂x = {x.grad}")  # ∂z/∂x = 4.0
+print(f"∂z/∂y = {y.grad}")  # ∂z/∂y = 0.0
+```
+
+### Neural Network Example
+
+```python
+from pygrad import Value, MLP
+from pygrad.nn import mse_loss
+
+# Create a Multi-Layer Perceptron
+# Architecture: 2 inputs -> 4 hidden neurons -> 1 output
+mlp = MLP(2, [4, 1], activation='relu')
+
+# Training data
+X = [[Value(0.0), Value(1.0)], [Value(1.0), Value(0.0)]]
+y = [Value(1.0), Value(1.0)]
+
+# Training loop
+for epoch in range(100):
+    # Forward pass
+    predictions = [mlp(x) for x in X]
+    loss = mse_loss(predictions, y)
+    
+    # Backward pass
+    mlp.zero_grad()
+    loss.backward()
+    
+    # Gradient descent
+    learning_rate = 0.01
+    for param in mlp.parameters():
+        param.data -= learning_rate * param.grad
+    
+    if epoch % 20 == 0:
+        print(f"Epoch {epoch}, Loss: {loss.data:.4f}")
+```
+
+## Core Components
+
+### Value Class
+
+The `Value` class is the core of the autograd engine. It wraps scalar values and tracks operations to build a computational graph.
+
+**Supported Operations:**
+- Arithmetic: `+`, `-`, `*`, `/`, `**`
+- Activation functions: `relu()`, `tanh()`, `sigmoid()`
+- Mathematical functions: `exp()`, `log()`
+
+### Neural Network Components
+
+#### Neuron
+A single neuron with weights, bias, and activation function.
+
+```python
+from pygrad.nn import Neuron
+
+neuron = Neuron(nin=3, activation='relu')
+output = neuron([Value(1.0), Value(2.0), Value(3.0)])
+```
+
+#### Layer
+A layer of multiple neurons.
+
+```python
+from pygrad.nn import Layer
+
+layer = Layer(nin=3, nout=4, activation='relu')
+outputs = layer([Value(1.0), Value(2.0), Value(3.0)])
+```
+
+#### MLP (Multi-Layer Perceptron)
+A complete neural network with multiple layers.
+
+```python
+from pygrad import MLP
+
+# Create network: 2 inputs -> 8 hidden -> 4 hidden -> 1 output
+mlp = MLP(2, [8, 4, 1], activation='tanh')
+```
+
+### Loss Functions
+
+```python
+from pygrad.nn import mse_loss, binary_cross_entropy
+
+# Mean Squared Error
+loss = mse_loss(predictions, targets)
+
+# Binary Cross Entropy
+loss = binary_cross_entropy(predictions, targets)
+```
+
+## Examples
+
+Run the example script to see PyGrad in action:
+
+```bash
+python examples/example.py
+```
+
+This demonstrates:
+- Basic autograd operations
+- Activation functions
+- Neural network creation
+- Training a network to approximate a function
+- Solving the XOR problem
+
+## How It Works
+
+PyGrad implements reverse-mode automatic differentiation (backpropagation):
+
+1. **Forward Pass**: Operations create a computational graph
+2. **Backward Pass**: Gradients flow backward through the graph using the chain rule
+3. **Topological Sort**: Ensures gradients are computed in the correct order
+
+### Example: Understanding the Computational Graph
+
+```python
+from pygrad import Value
+
+a = Value(2.0, label='a')
+b = Value(3.0, label='b')
+c = a * b
+c.label = 'c'
+d = c + a
+d.label = 'd'
+
+d.backward()
+
+# The computational graph:
+# a (2.0) ──┬──> * ──> c (6.0) ──┬──> + ──> d (8.0)
+#           │                     │
+# b (3.0) ──┘                     │
+#                                 │
+# a (2.0) ────────────────────────┘
+
+print(f"a.grad = {a.grad}")  # 4.0 (gradient accumulates from two paths)
+print(f"b.grad = {b.grad}")  # 2.0
+print(f"c.grad = {c.grad}")  # 1.0
+```
+
+## Architecture
+
+```
+pygrad/
+├── __init__.py       # Package initialization
+├── engine.py         # Autograd engine (Value class)
+└── nn.py            # Neural network components (Neuron, Layer, MLP)
+
+tests/
+├── test_engine.py   # Tests for autograd engine
+└── test_nn.py       # Tests for neural network components
+
+examples/
+└── example.py       # Example usage and demonstrations
+```
+
+## Testing
+
+Run the test suite:
+
+```bash
+# Install pytest if not already installed
+pip install pytest
+
+# Run all tests
+pytest tests/
+
+# Run with coverage
+pip install pytest-cov
+pytest tests/ --cov=pygrad --cov-report=html
+```
+
+## Limitations
+
+- **Scalars Only**: Works with scalar values, not tensors/matrices
+- **No GPU Support**: Pure Python implementation, CPU only
+- **Educational Purpose**: Designed for learning, not production use
+- **Limited Optimizers**: Only manual gradient descent is demonstrated
+
+## Inspiration
+
+PyGrad is inspired by:
+- [micrograd](https://github.com/karpathy/micrograd) by Andrej Karpathy
+- PyTorch's autograd system
+- The neural networks and deep learning course materials
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Future Enhancements
+
+Potential improvements:
+- Tensor support for batch operations
+- Additional optimizers (Adam, RMSprop, etc.)
+- Convolutional layers
+- Recurrent layers
+- Regularization techniques
+- Batch normalization
+- Dropout
