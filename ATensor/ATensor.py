@@ -9,11 +9,14 @@ class ATensor:
     Attributes:
         data (ndarray): The underlying data of the tensor.
     """
+
     data: ndarray
     _is_parameter: bool = False
     requires_autograd: bool = False
 
-    def __init__(self, data, is_parameter:bool=False, requires_autograd:bool=False):
+    def __init__(
+        self, data, is_parameter: bool = False, requires_autograd: bool = False
+    ):
         try:
             if isinstance(data, list) or isinstance(data, tuple):
                 data = array(data)
@@ -21,7 +24,7 @@ class ATensor:
                 data = data.copy()
             elif not isinstance(data, (int, float)):
                 raise TypeError("Data must be a list, tuple, ndarray, int, or float.")
-            self.data : ndarray = array(data)
+            self.data: ndarray = array(data)
         except Exception as e:
             print(f"Error initializing ATensor: {e}")
             raise ValueError(f"Invalid data: {type(data)} type for ATensor.")

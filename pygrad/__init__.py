@@ -1,4 +1,3 @@
-"""PyGrad - A neural network library with autograd symbolic gradient calculation."""
 
 from .engine import Value
 from .nn import Neuron, Layer, MLP
