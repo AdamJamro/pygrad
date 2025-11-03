@@ -1,0 +1,18 @@
+[project]
+name = "pygrad"
+version = "0.1.0"
+description = "A lightweight automatic differentiation library in Python."
+authors = [
+    { name="Adam Jamroziński" }
+]
+requires-python = ">=3.12"
+readme="README.md"
+dependencies = ["numpy>=2.3.1",]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4.2",]
+
+[build-system]
+requires = ["setuptools>=61.0",]
+build-backend = "setuptools.build_meta"
+

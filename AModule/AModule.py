@@ -1,5 +1,6 @@
 from ATensor import ATensor
 
+
 class AModule:
     def __init__(self):
         self.parameters = {}
