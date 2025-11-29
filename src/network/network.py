@@ -56,7 +56,7 @@ class Network(abc.ABC):
     def forward(self, *x: Variable) -> Sequence[Variable] | Variable:
         raise NotImplementedError
 
-    def __call__(self, *x: Variable) -> Sequence[Variable]:
+    def __call__(self, *x: Variable) -> Sequence[Variable] | Variable:
         return self.forward(*x)
 
     def parameters(self, recurse=True) -> Iterable[Variable]:
@@ -82,5 +82,5 @@ class Linear(Network):
 
     def forward(self, x: Variable) -> Variable:
         # todo reduce 2 operations into one by special operator_lin_step(w, b, x)
-        alpha = self.weight * x + self.bias
+        alpha = self.weight @ x + self.bias
         return alpha

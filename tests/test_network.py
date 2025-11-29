@@ -1,6 +1,3 @@
-from typing import Sequence
-
-
 from network.network import Network, Variable, Linear
 
 
@@ -26,7 +23,7 @@ def test_linear_step_in_network():
             super().__init__()
             self.L1 = Linear(2, 1)
 
-        def forward(self, x: Variable) -> Sequence[Variable]:
+        def forward(self, x: Variable) -> Variable:
             return self.L1(x)
 
     lin_nn = LinearNN()

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import functools
 from functools import lru_cache
-from typing import Iterable, Sequence, TypeAlias, Any, Callable
+from typing import Iterable, Sequence, TypeAlias, Any, Callable, Literal
 
 from numpy import ndarray, array, ones, shape, einsum, pad, ones_like, flip, exp, zeros
 from numpy.lib._stride_tricks_impl import as_strided
@@ -87,7 +87,7 @@ class Variable:
     @staticmethod
     def convert_input_into_variable(
         operator_impl,
-    ) -> Callable[[Any, ...], tuple[Variable, ...]]:
+    ) -> Callable[[Any, ...], Sequence[Variable]]:
         @functools.wraps(operator_impl)
         def operator_wrapped(self, *raw_inputs: numeric | Variable):
             if not TYPE_SAFE:
@@ -158,9 +158,13 @@ class Variable:
     def pad(self, pad_width: Sequence[tuple[int, int]]):
         return operator_pad(self, pad_width=pad_width)
 
+    @property
+    def shape(self):
+        return self.value.shape
+
     @staticmethod
     def convolve(matrix: Variable, kernel: Variable):
-        """Convolve 2d 2D o padding"""
+        """Convolve matrix with kernel, both"""
         if TYPE_SAFE:
             assert matrix.value.ndim == 2 and kernel.value.ndim == 2, (
                 "2D convolution requires both input and kernel to be 2D arrays."
@@ -339,6 +343,22 @@ def operator_pad(matrix: Variable, pad_width: Sequence[tuple[int, int]]) -> Vari
     return forward
 
 
+def _stream2windows(stream: ndarray, window_length: shape) -> ndarray:
+    """
+    Extracts a view of sliding windows from the input 1D stream based on window_length.
+    Assumes no padding and left/right sliding stride of 1.
+    """
+    (stream_length,) = stream.shape
+    output_length = stream_length - window_length + 1
+
+    sliding_windows_shape = (output_length, window_length)
+    sliding_windows_strides = (stream.strides[0], stream.strides[0])
+
+    return as_strided(
+        stream, shape=sliding_windows_shape, strides=sliding_windows_strides
+    )
+
+
 def _image2windows(image: ndarray, window_shape: shape) -> ndarray:
     """
     Extracts a view of sliding windows from the input image based on windws_shape.
@@ -363,21 +383,70 @@ def _image2windows(image: ndarray, window_shape: shape) -> ndarray:
     )
 
 
-def convolution_2d_forward(matrix: ndarray, kernel: ndarray) -> ndarray:
+def _space2windows(space: ndarray, window_shape: shape) -> ndarray:
     """
-    Performs a 2D convolution operation on the input 2D matrix with the given 2D kernel.
+    Extracts a view of sliding windows from the input space based on windws_shape.
+    Assumes no padding and sliding stride of 1 in all dimensions.
+    """
+    s_1d, s_2d, s_3d = space.shape
+    w_1d, w_2d, w_3d = window_shape
+    output_1d = s_1d - w_1d + 1
+    output_2d = s_2d - w_2d + 1
+    output_3d = s_3d - w_3d + 1
 
-    This implementation does not flip the kernel, effectively performing cross-correlation.
+    sliding_windows_shape = (output_1d, output_2d, output_3d, w_1d, w_2d, w_3d)
+    sliding_windows_strides = (
+        space.strides[0],
+        space.strides[1],
+        space.strides[2],
+        space.strides[0],
+        space.strides[1],
+        space.strides[2],
+    )
+
+    return as_strided(
+        space, shape=sliding_windows_shape, strides=sliding_windows_strides
+    )
+
+
+def convolve_forward(
+    tensor: ndarray,
+    kernel: ndarray,
+    optimize: Literal["greedy", "optimal"] | bool | Sequence | None = True,
+) -> ndarray:
+    """
+    Performs a convolution operation on the input ndarray with the given kernel.
+
+    Matrix and Kernel must adhere to constraints.
+    This library version supports 1d,2d and 3d convolutions, but more dimensions are straightforward to implement.
+    Note that if the length of dimensions of tensor and kernel match, custom 4D, 5D, and so on sliding windows
+    result in the exact same backward functions!
+
+    This implementation does not flip the kernel, effectively performing a Convolution* a.k.a. Cross-Correlation.
     Note we do not perform padding and assume a stride of 1.
-    """
-    windows = _image2windows(matrix, kernel.shape)
 
-    # broadcast multiplication and sum over the last two axes
-    return einsum("ijkl,kl->ij", windows, kernel)
+    The 'optimize' param is passed to the numpy.einsum for optimized broadcasted multiplication and reduction sum
+    with no optimization the broadcasting with einsum is already faster because it doesn't create copies of intermediate arrays.
+    """
+    match kernel.shape:
+        case (_,):
+            windows = _stream2windows(tensor, kernel.shape)
+            subscript = "ij,j->i"
+        case (_, _):
+            windows = _image2windows(tensor, kernel.shape)
+            subscript = "ijkl,kl->ij"
+        case (_, _, _):
+            windows = _space2windows(tensor, kernel.shape)
+            subscript = "ijklmn,lmn->ijk"
+        case _:
+            raise ValueError("This type of convolution needs a custom implementation.")
+
+    # broadcast multiplication and sum over the last kernel.ndim axis
+    return einsum(subscript, windows, kernel, optimize=optimize)
 
 
 def convolution_2d(matrix: Variable, kernel: Variable):
-    forward = Variable(convolution_2d_forward(matrix.value, kernel.value))
+    forward = Variable(convolve_forward(matrix.value, kernel.value))
     inputs = (matrix, kernel)
     outputs = (forward,)
 
@@ -436,7 +505,7 @@ def f_sigmoid(var: Variable):
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dResult,) = dLoss_dOutputs
-        dLoss_dInput = dLoss_dResult * forward * (1 - forward)
+        dLoss_dInput = dLoss_dResult * forward * (-forward + 1)
         dLoss_dInputs = (dLoss_dInput,)
         return dLoss_dInputs
 
