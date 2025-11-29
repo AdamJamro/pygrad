@@ -19,8 +19,9 @@ import functools
 from functools import lru_cache
 from typing import Iterable, Sequence, TypeAlias, Any, Callable, Literal
 
-from numpy import ndarray, array, ones, shape, einsum, pad, ones_like, flip, exp, zeros
+from numpy import ndarray, array, ones, shape, einsum, pad, ones_like, flip, exp, zeros, tanh, maximum
 from numpy.lib._stride_tricks_impl import as_strided
+from numpy.ma.core import allclose
 
 from src.autodiff.tape import Tape
 
@@ -92,22 +93,21 @@ class Variable:
         def operator_wrapped(self, *raw_inputs: numeric | Variable):
             if not TYPE_SAFE:
                 return operator_impl(self, *raw_inputs)
-            converted: Variable
             converted_args: list[Variable] = []
             for raw_other in raw_inputs:
+                converted: Variable
                 match raw_other:
                     case ndarr if isinstance(ndarr, ndarray):
                         # TODO check supported dimensions
-                        converted = Variable(raw_other)
+                        converted_args.append(Variable(raw_other))
                     case raw_numeric if isinstance(raw_numeric, (int, float)):
-                        converted = Variable.constant(raw_numeric)
+                        converted_args.append(Variable.constant(raw_numeric))
                     case already_variable if isinstance(already_variable, Variable):
-                        converted = already_variable
+                        converted_args.append(already_variable)
                     case _:
                         raise TypeError(
                             f"Unsupported type for Variable operation: {type(raw_other).__name__}"
                         )
-                converted_args.append(converted)
             return operator_impl(self, *converted_args)
 
         return operator_wrapped
@@ -117,39 +117,39 @@ class Variable:
 
     # operators have no explicit type checks for micro optimization as static typechecks should be enough
     @convert_input_into_variable
-    def __add__(self, other: Variable):
+    def __add__(self, other: Variable | numeric):
         return operator_add(self, other)
 
     @convert_input_into_variable
-    def __radd__(self, other: Variable):
+    def __radd__(self, other: Variable | numeric):
         return operator_add(self, other)
 
     @convert_input_into_variable
-    def __neg__(self, other: Variable):
+    def __neg__(self, other: Variable | numeric):
         return operator_neg(self)
 
     @convert_input_into_variable
-    def __sub__(self, other: Variable):
+    def __sub__(self, other: Variable | numeric):
         return operator_add(self, -other)
 
     @convert_input_into_variable
-    def __rsub__(self, other: Variable):
+    def __rsub__(self, other: Variable | numeric):
         return operator_add(-other, self)
 
     @convert_input_into_variable
-    def __mul__(self, other: Variable):
+    def __mul__(self, other: Variable | numeric):
         return operator_mul(self, other)
 
     @convert_input_into_variable
-    def __rmul__(self, other: Variable):
+    def __rmul__(self, other: Variable | numeric):
         return operator_mul(self, other)
 
     @convert_input_into_variable
-    def __matmul__(self, other: Variable):
+    def __matmul__(self, other: Variable | ndarray):
         return operator_matmul(self, other)
 
     @convert_input_into_variable
-    def __rmatmul__(self, other: Variable):
+    def __rmatmul__(self, other: Variable | ndarray):
         return operator_matmul(other, self)
 
     def flip(self):
@@ -166,21 +166,29 @@ class Variable:
     def convolve(matrix: Variable, kernel: Variable):
         """Convolve matrix with kernel, both"""
         if TYPE_SAFE:
-            assert matrix.value.ndim == 2 and kernel.value.ndim == 2, (
-                "2D convolution requires both input and kernel to be 2D arrays."
+            assert matrix.value.ndim == kernel.value.ndim, (
+                "convolution arguments dimensionality must match."
             )
             assert (
-                matrix.value.shape[0] >= kernel.value.shape[0]
-                and matrix.value.shape[1] >= kernel.value.shape[1]
+                matrix.value.shape[0] > kernel.value.shape[0]
+                and matrix.value.shape[1] > kernel.value.shape[1]
             ), (
-                "Kernel size must be smaller than or equal to input size for convolution."
+                "Kernel size must be smaller than input size for convolution. Use elementwise multiplication instead."
             )
 
-        return convolution_2d(matrix, kernel)
+        return operator_convolution(matrix, kernel)
 
     @staticmethod
     def ReLU(variable: Variable):
-        return f_relu(variable)
+        return activation_ReLU(variable)
+
+    @staticmethod
+    def sigmoid(variable: Variable):
+        return activation_sigmoid(variable)
+
+    @staticmethod
+    def tanh(variable: Variable):
+        return activation_tanh(variable)
 
     def backward(
         self, directional_grad: Variable | None = None
@@ -191,16 +199,23 @@ class Variable:
 
 
 @lru_cache(maxsize=None)
-def _ONES(arr_shape: int | Iterable[int], dtype=float) -> Variable:
+def _ONES(arr_shape: int | Iterable[int], dtype=None) -> Variable:
+    """
+    Returns cached Variable of ones with a given shape and type
+
+    Thus this should never be a learnable parameter (must stay immutable)
+    """
     return Variable(ones(arr_shape, dtype=dtype))
 
 
 @lru_cache(maxsize=None)
-def _ZEROS(arr_shape: int | Iterable[int], dtype=float) -> Variable:
+def _ZEROS(arr_shape: int | Iterable[int], dtype=None) -> Variable:
+    """
+    Returns cached Variable of zeros with a given shape and type
+
+    Thus this should never be a learnable parameter (must stay immutable)
+    """
     return Variable(zeros(arr_shape, dtype=dtype))
-
-
-# some operators have only one result variable so they assume the input was never None
 
 
 def operator_add(var1: Variable, var2: Variable) -> Variable:
@@ -242,10 +257,16 @@ def operator_neg(var: Variable) -> Variable:
     return forward
 
 
-def operator_mul(var1: Variable, var2: Variable) -> Variable:
-    forward = Variable(var1.value * var2.value)
-    # TODO optimize edge case [1,1,...], [0,...] multiplication?
+def operator_mul(var1: Variable, var2: Variable, peephole_optimization=False) -> Variable:
+    if peephole_optimization:
+        if allclose(var1, _ONES(var1.shape)):
+            return var2
+        if allclose(var2, _ONES(var2.shape)):
+            return var1
+        if allclose(var1, _ZEROS(var1.shape)) or allclose(var2, _ZEROS(var2.shape)):
+            return _ZEROS(var1.shape) * _ZEROS(var2.shape)
 
+    forward = Variable(var1.value * var2.value)
     inputs = (
         var1,
         var2,
@@ -445,7 +466,7 @@ def convolve_forward(
     return einsum(subscript, windows, kernel, optimize=optimize)
 
 
-def convolution_2d(matrix: Variable, kernel: Variable):
+def operator_convolution(matrix: Variable, kernel: Variable):
     forward = Variable(convolve_forward(matrix.value, kernel.value))
     inputs = (matrix, kernel)
     outputs = (forward,)
@@ -476,10 +497,10 @@ def convolution_2d(matrix: Variable, kernel: Variable):
     return forward
 
 
-def f_relu(var: Variable):
+def activation_ReLU(var: Variable):
     """Element-wise Rectified Linear Unit activation function"""
 
-    forward = Variable(var.value * (var.value > 0))
+    forward = Variable(maximum(0, var.value))
     inputs = (var,)
     outputs = (forward,)
 
@@ -495,17 +516,16 @@ def f_relu(var: Variable):
     return forward
 
 
-def f_sigmoid(var: Variable):
+def activation_sigmoid(var: Variable):
     """Element-wise Sigmoid activation function"""
 
-    sigmoid_value = 1 / (1 + exp(-var.value))
-    forward = Variable(sigmoid_value)
+    forward = Variable(1.0 / (1.0 + exp(-var.value)))
     inputs = (var,)
     outputs = (forward,)
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dResult,) = dLoss_dOutputs
-        dLoss_dInput = dLoss_dResult * forward * (-forward + 1)
+        dLoss_dInput = dLoss_dResult * (forward * (1 - forward))
         dLoss_dInputs = (dLoss_dInput,)
         return dLoss_dInputs
 
@@ -514,6 +534,58 @@ def f_sigmoid(var: Variable):
 
     return forward
 
+
+def activation_tanh(var: Variable):
+    """
+    Element-wise Tanh activation function
+
+    tanh(x) = (e^(x) - e^(-x)) / (e^(x) + e^(-x))
+    """
+
+    forward = Variable(tanh(var.value))
+    inputs = (var,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dResult,) = dLoss_dOutputs
+        dLoss_dInput = dLoss_dResult * (1 - forward * forward)
+        dLoss_dInputs = (dLoss_dInput,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
+
+
+def activation_log_softmax(var: Variable, axis: int = -1):
+    """
+    Element-wise Log(Softmax(var)) activation function along the specified axis
+
+    Use it with negative log likelhood to achieve cross-entropy loss.
+
+    This implementation includes the standard numerical stability trick with the max subtraction.
+    """
+
+    var_value = var.value
+    exp_values = exp(var_value - var_value.max(axis=axis, keepdims=True))
+    softmax_values = exp_values / exp_values.sum(axis=axis, keepdims=True)
+    forward = Variable(softmax_values)
+
+    inputs = (var,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dResult,) = dLoss_dOutputs
+        # Jacobian matrix for softmax is complex; here we use a simplified version
+        dLoss_dInput = dLoss_dResult * forward * (1 - forward)
+        dLoss_dInputs = (dLoss_dInput,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
 
 def grad(
     loss_variable: Variable,
@@ -527,8 +599,9 @@ def grad(
     dLoss_d lookup map effectively works out to make dLoss_d[x] equal to dLoss/dx
 
     :returns
-        a dictionary of the dloss_variable/d[key] where key is any other variable used to compute the loss_variable
+        a dictionary of the d(loss_variable)/d[key] where key is any other variable used to compute the loss_variable
 
+    :params
     loss_variable:
         The top node of the computation graph representing the loss.
         If the loss is not a scalar, it's implicitly set to be an array of ones with the same shape as the loss.
