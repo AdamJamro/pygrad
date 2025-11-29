@@ -19,7 +19,7 @@ import functools
 from functools import lru_cache
 from typing import Iterable, Sequence, TypeAlias, Any, Callable
 
-from numpy import ndarray, array, ones, shape, einsum, pad, ones_like
+from numpy import ndarray, array, ones, shape, einsum, pad, ones_like, flip, exp, zeros
 from numpy.lib._stride_tricks_impl import as_strided
 
 from src.autodiff.tape import Tape
@@ -73,7 +73,7 @@ numeric: TypeAlias = int | float | ndarray
 class Variable:
     __slots__ = ("name", "value")
 
-    def __init__(self, value: numeric = None, name: str = None):
+    def __init__(self, value: numeric | Iterable[numeric] = None, name: str = None):
         self.name = name or free_name()
         self.value = value if isinstance(value, ndarray) else array(value)
 
@@ -89,12 +89,12 @@ class Variable:
         operator_impl,
     ) -> Callable[[Any, ...], tuple[Variable, ...]]:
         @functools.wraps(operator_impl)
-        def operator_wrapped(self, *raw_others: numeric | Variable):
+        def operator_wrapped(self, *raw_inputs: numeric | Variable):
             if not TYPE_SAFE:
-                return operator_impl(self, *raw_others)
+                return operator_impl(self, *raw_inputs)
             converted: Variable
             converted_args: list[Variable] = []
-            for raw_other in raw_others:
+            for raw_other in raw_inputs:
                 match raw_other:
                     case ndarr if isinstance(ndarr, ndarray):
                         # TODO check supported dimensions
@@ -152,37 +152,52 @@ class Variable:
     def __rmatmul__(self, other: Variable):
         return operator_matmul(other, self)
 
-    @convert_input_into_variable
-    def convolve(self, kernel: Variable):
+    def flip(self):
+        return operator_flip(self)
+
+    def pad(self, pad_width: Sequence[tuple[int, int]]):
+        return operator_pad(self, pad_width=pad_width)
+
+    @staticmethod
+    def convolve(matrix: Variable, kernel: Variable):
         """Convolve 2d 2D o padding"""
         if TYPE_SAFE:
-            assert self.value.ndim == 2 and kernel.value.ndim == 2, (
+            assert matrix.value.ndim == 2 and kernel.value.ndim == 2, (
                 "2D convolution requires both input and kernel to be 2D arrays."
             )
             assert (
-                self.value.shape[0] >= kernel.value.shape[0]
-                and self.value.shape[1] >= kernel.value.shape[1]
+                matrix.value.shape[0] >= kernel.value.shape[0]
+                and matrix.value.shape[1] >= kernel.value.shape[1]
             ), (
                 "Kernel size must be smaller than or equal to input size for convolution."
             )
 
-        return convolution_2d(self, kernel)
+        return convolution_2d(matrix, kernel)
 
-    @convert_input_into_variable
-    def ReLU(self):
-        return operator_relu(self)
+    @staticmethod
+    def ReLU(variable: Variable):
+        return f_relu(variable)
 
-
-    def backward(self, directional_grad: Variable | None = None) -> dict[Variable, Variable]:
+    def backward(
+        self, directional_grad: Variable | None = None
+    ) -> dict[Variable, Variable]:
         """Convenience method to compute gradients of this variable with respect to all other variables in the graph."""
-        return grad(self, directional_grad=directional_grad)
+        global _tape_stack
+        return grad(self, directional_grad=directional_grad, tape_records=_tape_stack)
 
 
 @lru_cache(maxsize=None)
 def _ONES(arr_shape: int | Iterable[int], dtype=float) -> Variable:
     return Variable(ones(arr_shape, dtype=dtype))
 
+
+@lru_cache(maxsize=None)
+def _ZEROS(arr_shape: int | Iterable[int], dtype=float) -> Variable:
+    return Variable(zeros(arr_shape, dtype=dtype))
+
+
 # some operators have only one result variable so they assume the input was never None
+
 
 def operator_add(var1: Variable, var2: Variable) -> Variable:
     forward = Variable(var1.value + var2.value)
@@ -271,6 +286,59 @@ def operator_matmul(matrix: Variable, vector: Variable) -> Variable:
     return forward
 
 
+def operator_flip(matrix: Variable, **kwargs) -> Variable:
+    """
+    flip the array variable along dimension
+    equivalent to numpy.flip
+
+    operator_flip(array) is equivalent to array[::-1,::-1, ..., ::-1]
+    """
+    forward = Variable(flip(matrix.value, **kwargs))
+
+    inputs = (matrix,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dRotatedResult,) = dLoss_dOutputs
+        dLoss_dMatrix = dLoss_dRotatedResult.flip()
+        dLoss_dInputs = (dLoss_dMatrix,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
+
+
+def operator_pad(matrix: Variable, pad_width: Sequence[tuple[int, int]]) -> Variable:
+    """
+    Pads the array variable according to pad_width
+    pad_width ~ ((before(dim), after(dim)) for dim in each dimension)
+    """
+    forward = Variable(pad(matrix.value, pad_width=pad_width))
+
+    inputs = (matrix,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dPaddedResult,) = dLoss_dOutputs
+
+        # slices = tuple(
+        #     slice(pad_width_dim[0], dLoss_dPaddedResult.value.shape[i] - pad_width_dim[1])
+        #     for i, pad_width_dim in enumerate(pad_width)
+        # )
+        # dLoss_dMatrix = Variable(dLoss_dPaddedResult.value[slices])
+
+        dLoss_dMatrix = matrix  # variables are immutable during grad computation, so only link dL_dIn matrix with dLdOut matrix padded with constants
+        dLoss_dInputs = (dLoss_dMatrix,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
+
+
 def _image2windows(image: ndarray, window_shape: shape) -> ndarray:
     """
     Extracts a view of sliding windows from the input image based on windws_shape.
@@ -296,17 +364,16 @@ def _image2windows(image: ndarray, window_shape: shape) -> ndarray:
 
 
 def convolution_2d_forward(matrix: ndarray, kernel: ndarray) -> ndarray:
-    """Performs a 2D convolution operation on the input matrix with the given kernel."""
-    m_rows, m_cols = matrix.shape
-    k_rows, k_cols = kernel.shape
-    output_rows, output_cols = m_rows - k_rows + 1, m_cols - k_cols + 1
-    output = ndarray((output_rows, output_cols))
+    """
+    Performs a 2D convolution operation on the input 2D matrix with the given 2D kernel.
 
+    This implementation does not flip the kernel, effectively performing cross-correlation.
+    Note we do not perform padding and assume a stride of 1.
+    """
     windows = _image2windows(matrix, kernel.shape)
-    kernel_flipped = kernel[::-1, ::-1]
 
     # broadcast multiplication and sum over the last two axes
-    return einsum("ijkl,kl->ij", windows, kernel_flipped)
+    return einsum("ijkl,kl->ij", windows, kernel)
 
 
 def convolution_2d(matrix: Variable, kernel: Variable):
@@ -317,23 +384,19 @@ def convolution_2d(matrix: Variable, kernel: Variable):
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dConvResult,) = dLoss_dOutputs
 
-        # Gradient w.r.t. input matrix
-        # magic: convolution between padded dLoss_dConvResult and kernel
-        kernel_flipped = Variable(kernel.value[::-1, ::-1])
+        # Gradient w.r.t. input matrix, magically equal to:
+        # convolution between padded dLoss_dConvResult and a rotated kernel by 180 degrees
+        kernel_flipped = kernel.flip()
         pad_height = kernel.value.shape[0] - 1
         pad_width = kernel.value.shape[1] - 1
-        padded_conv_result = Variable(
-            pad(
-                dLoss_dConvResult.value,
-                ((pad_height, pad_height), (pad_width, pad_width)),
-            )
+        padded_conv_result = dLoss_dConvResult.pad(
+            ((pad_height, pad_height), (pad_width, pad_width))
         )
         dLoss_dMatrix = padded_conv_result.convolve(kernel_flipped)
 
-        # Gradient w.r.t. kernel
-        # magic: convolution between input matrix and flipped dLoss_dConvResult
-        conv_result_flipped = Variable(dLoss_dConvResult.value[::-1, ::-1])
-        dLoss_dKernel = matrix.convolve(conv_result_flipped)
+        # Gradient w.r.t. kernel magically equal to:
+        # convolution between input matrix and dLoss_dConvResult
+        dLoss_dKernel = matrix.convolve(dLoss_dConvResult)
 
         dLoss_dInputs = (dLoss_dMatrix, dLoss_dKernel)
         return dLoss_dInputs
@@ -344,8 +407,43 @@ def convolution_2d(matrix: Variable, kernel: Variable):
     return forward
 
 
-def operator_relu(var: Variable):
-    raise NotImplementedError
+def f_relu(var: Variable):
+    """Element-wise Rectified Linear Unit activation function"""
+
+    forward = Variable(var.value * (var.value > 0))
+    inputs = (var,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dResult,) = dLoss_dOutputs
+        dLoss_dInput = dLoss_dResult * Variable((var.value > 0).astype(float))
+        dLoss_dInputs = (dLoss_dInput,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
+
+
+def f_sigmoid(var: Variable):
+    """Element-wise Sigmoid activation function"""
+
+    sigmoid_value = 1 / (1 + exp(-var.value))
+    forward = Variable(sigmoid_value)
+    inputs = (var,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dResult,) = dLoss_dOutputs
+        dLoss_dInput = dLoss_dResult * forward * (1 - forward)
+        dLoss_dInputs = (dLoss_dInput,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
 
 
 def grad(
@@ -378,9 +476,9 @@ def grad(
     if tape_records is None:
         tape_records = get_tape_stack_snapshot()
     dLoss_d: dict[Variable, Variable] = {
-        loss_variable: Variable(
-            ones_like(loss_variable.value)
-        ) if directional_grad is None else directional_grad
+        loss_variable: Variable(ones_like(loss_variable.value))
+        if directional_grad is None
+        else directional_grad
     }
 
     def prune_unused_outputs(
@@ -399,15 +497,17 @@ def grad(
         # perform chain rule back propagation
         dLoss_dInputs = tape_record.back_fn(dLoss_dOutputs)
 
-        # the dag computation can have different shapes than simple MLP's so we actually sum all the gradients
+        # due to unconstrained computation graph shape we actually sum all the gradients
+        # the automatic topological sorting of the tape ensures we use the final dLoss_d[tape_input] value
+        # only when it was fully computed
         for tape_input, dL_dInput in zip(tape_record.inputs, dLoss_dInputs):
-            # we could have used defaultdict(lambda x:0) but this way we keep the notion of what was actually used
+            # we could have used defaultdict(lambda x:zeros) but this way we keep the notion of what was used in the process
             if tape_input not in dLoss_d:
                 dLoss_d[tape_input] = dL_dInput
             else:
                 dLoss_d[tape_input] += dL_dInput
 
-    # print some information to understand the values of each intermediate
+    # debug information values of each intermediate gradient
     # for name, value in dLoss_d.items():
     #     print(f"d{loss_variable.name}_d{name} = {value.name}")
 

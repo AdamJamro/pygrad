@@ -1,11 +1,12 @@
 import abc
 from abc import abstractmethod
-from typing import List, Sequence
+from itertools import chain
+from typing import Sequence, Iterable
 
 from numpy.random import random
 
-import autodiff.variable
 from autodiff.variable import Variable
+
 
 class Network(abc.ABC):
     """
@@ -23,11 +24,12 @@ class Network(abc.ABC):
             overwrite of abstract forward is being required
             this function needs to return the output Variable
     """
-    __slots__ = ("__dict__", "forward", "backward", "_parameters", "_subnetworks")
+
+    __slots__ = ("__dict__", "_parameters", "_subnetworks")
 
     def __init__(self):
-        object.__setattr__(self, '_parameters', [])
-        object.__setattr__(self, '_subnetworks', [])
+        object.__setattr__(self, "_parameters", [])
+        object.__setattr__(self, "_subnetworks", [])
 
     def __setattr__(self, name, value):
         parameters = getattr(self, "_parameters", None)
@@ -50,22 +52,35 @@ class Network(abc.ABC):
 
         object.__setattr__(self, name, value)
 
-
     @abstractmethod
-    def forward(self, x: Sequence[Variable]) -> Sequence[Variable]:
+    def forward(self, *x: Variable) -> Sequence[Variable] | Variable:
         raise NotImplementedError
 
-    def __call__(self , x: Sequence[Variable]) -> Sequence[Variable]:
-        return self.forward(x)
+    def __call__(self, *x: Variable) -> Sequence[Variable]:
+        return self.forward(*x)
 
+    def parameters(self, recurse=True) -> Iterable[Variable]:
+        return chain(
+            self._parameters,
+            (
+                param
+                for subnetwork in self._subnetworks
+                for param in subnetwork.parameters(recurse=recurse)
+            ),
+        )
 
 
 class Linear(Network):
     def __init__(self, in_features_length: int, out_features_length: int):
         super().__init__()
-        self.weight = random((out_features_length, in_features_length))
-        self.bias = (out_features_length,)
+        self.weight = Variable(random((out_features_length, in_features_length)))
+        self.bias = Variable(
+            random(
+                out_features_length,
+            )
+        )
 
-    def forward(self, x: Sequence[Variable]) -> Sequence[Variable]:
+    def forward(self, x: Variable) -> Variable:
+        # todo reduce 2 operations into one by special operator_lin_step(w, b, x)
         alpha = self.weight * x + self.bias
         return alpha
