@@ -19,8 +19,22 @@ import functools
 from functools import lru_cache
 from typing import Iterable, Sequence, TypeAlias, Any, Callable, Literal
 
-from numpy import ndarray, array, ones, shape, einsum, pad, ones_like, flip, exp, zeros, tanh, maximum
-from numpy.lib._stride_tricks_impl import as_strided
+from numpy import (
+    ndarray,
+    array,
+    ones,
+    shape,
+    einsum,
+    pad,
+    ones_like,
+    flip,
+    exp,
+    zeros,
+    tanh,
+    maximum,
+    log,
+)
+from numpy.lib._stride_tricks_impl import as_strided, broadcast_to
 from numpy.ma.core import allclose
 
 from src.autodiff.tape import Tape
@@ -69,6 +83,24 @@ def reset_name_ids():
 
 
 numeric: TypeAlias = int | float | ndarray
+
+
+def operator_transpose(var: Variable):
+    forward = Variable(var.value.T)
+
+    inputs = (var,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dTransposedResult,) = dLoss_dOutputs
+        dLoss_dVar = dLoss_dTransposedResult.T
+        dLoss_dInputs = (dLoss_dVar,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
 
 
 class Variable:
@@ -152,15 +184,33 @@ class Variable:
     def __rmatmul__(self, other: Variable | ndarray):
         return operator_matmul(other, self)
 
-    def flip(self):
+    def flip(self) -> Variable:
         return operator_flip(self)
 
-    def pad(self, pad_width: Sequence[tuple[int, int]]):
+    def pad(self, pad_width: Sequence[tuple[int, int]]) -> Variable:
         return operator_pad(self, pad_width=pad_width)
+
+    def sum(self, axis: tuple[int, ...] | int | None = None) -> Variable:
+        return operator_sum(self, axis=axis)
+
+    def broadcast_to(self, _shape) -> Variable:
+        return operator_broadcast_to(self, _shape=_shape)
 
     @property
     def shape(self):
         return self.value.shape
+
+    @property
+    def T(self) -> Variable:
+        return operator_transpose(self)
+
+    @property
+    def ndim(self):
+        return self.value.ndim
+
+    @property
+    def size(self):
+        return self.value.size
 
     @staticmethod
     def convolve(matrix: Variable, kernel: Variable):
@@ -257,7 +307,9 @@ def operator_neg(var: Variable) -> Variable:
     return forward
 
 
-def operator_mul(var1: Variable, var2: Variable, peephole_optimization=False) -> Variable:
+def operator_mul(
+    var1: Variable, var2: Variable, peephole_optimization=False
+) -> Variable:
     if peephole_optimization:
         if allclose(var1, _ONES(var1.shape)):
             return var2
@@ -299,9 +351,8 @@ def operator_matmul(matrix: Variable, vector: Variable) -> Variable:
                 f"dLoss_dMatmulResult shape {dLoss_dMatmulResult.value.shape} != forward shape {forward.value.shape}"
             )
 
-        dLoss_dMatrix = dLoss_dMatmulResult @ Variable(vector.value.T)
-        # maybe swap the order of matmul to get rid of transpose?
-        dLoss_dVector = Variable(matrix.value.T) @ dLoss_dMatmulResult
+        dLoss_dMatrix = dLoss_dMatmulResult @ vector.T
+        dLoss_dVector = matrix.T @ dLoss_dMatmulResult
         dLoss_dInputs = (dLoss_dMatrix, dLoss_dVector)
         return dLoss_dInputs
 
@@ -356,6 +407,76 @@ def operator_pad(matrix: Variable, pad_width: Sequence[tuple[int, int]]) -> Vari
 
         dLoss_dMatrix = matrix  # variables are immutable during grad computation, so only link dL_dIn matrix with dLdOut matrix padded with constants
         dLoss_dInputs = (dLoss_dMatrix,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
+
+
+# TODO debug
+def operator_broadcast_to(tensor: Variable, _shape) -> Variable:
+    """
+    Broadcasts the array variable to the given shape
+    equivalent to numpy.broadcast_to
+
+    Beware this function uses numpy's view under the hood
+    so the result of this operator must remain immutable.
+    """
+    forward = Variable(broadcast_to(tensor.value, shape=_shape))
+
+    inputs = (tensor,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dBroadcastedResult,) = dLoss_dOutputs
+
+        # sum over the broadcasted dimensions
+        reduce_extra_axes = tuple(
+            range(dLoss_dBroadcastedResult.ndim - tensor.value.ndim)
+        )
+        intermediate_sum = dLoss_dBroadcastedResult.sum(axis=reduce_extra_axes)
+        reduce_inner_axes = tuple(
+            axis
+            for axis, (dim1, dim2) in enumerate(
+                zip(tensor.value.shape, intermediate_sum.shape)
+            )
+            if dim1 != dim2
+        )
+        dLoss_dTensor = dLoss_dBroadcastedResult.sum(
+            axis=reduce_inner_axes, keepdims=True
+        )
+        if TYPE_SAFE:
+            assert dLoss_dTensor.shape == tensor.shape, (
+                "shape mismatch in broadcast_to backward pass"
+            )
+
+        dLoss_dInputs = (dLoss_dTensor,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
+
+
+def operator_sum(
+    tensor: Variable, axis: tuple[int, ...] | int | None = None
+) -> Variable:
+    """
+    Sums the elements of the tensor along the specified axis.
+    If axis is None, sums all elements.
+    """
+    forward = Variable(tensor.value.sum(axis=axis))
+
+    inputs = (tensor,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dSumResult,) = dLoss_dOutputs
+        dLoss_dTensor = dLoss_dSumResult.broadcast_to(tensor.shape)
+        dLoss_dInputs = (dLoss_dTensor,)
         return dLoss_dInputs
 
     global _tape_stack
@@ -562,23 +683,36 @@ def activation_log_softmax(var: Variable, axis: int = -1):
     """
     Element-wise Log(Softmax(var)) activation function along the specified axis
 
-    Use it with negative log likelhood to achieve cross-entropy loss.
+    Use it with Negative-Log-Likelihood to achieve cross-entropy loss.
+
+    Note that for regular softmax the derivatives would have looked like
+        dSoftmax_i/dInput_i = Softmax_i * (1 - Softmax_i)
+        dSoftmax_i/dInput_j = -Softmax_i * Softmax_j; if i != j
+    however with log it simplifies to:
+        dLogSoftmax_i/dInput_i = 1 - Softmax_i
+        dLogSoftmax_i/dInput_j = -Softmax_j; if i != j
 
     This implementation includes the standard numerical stability trick with the max subtraction.
     """
 
     var_value = var.value
-    exp_values = exp(var_value - var_value.max(axis=axis, keepdims=True))
-    softmax_values = exp_values / exp_values.sum(axis=axis, keepdims=True)
-    forward = Variable(softmax_values)
+    normalized_exp_values = exp(var_value - var_value.max(axis=axis, keepdims=True))
+    # log-sum-exp stability trick
+    log_softmax_values = normalized_exp_values - log(
+        normalized_exp_values.sum(axis=axis, keepdims=True)
+    )
+    forward = Variable(log_softmax_values)
 
     inputs = (var,)
     outputs = (forward,)
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dResult,) = dLoss_dOutputs
-        # Jacobian matrix for softmax is complex; here we use a simplified version
-        dLoss_dInput = dLoss_dResult * forward * (1 - forward)
+        # Jacobian matrix for log_softmax is complex but gives more control over the learning process
+        dLoss_dInput = (
+            dLoss_dResult.broadcast_to((*var.shape, *dLoss_dResult.shape)) @ -forward
+            + dLoss_dResult
+        )
         dLoss_dInputs = (dLoss_dInput,)
         return dLoss_dInputs
 
@@ -586,6 +720,47 @@ def activation_log_softmax(var: Variable, axis: int = -1):
     _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
 
     return forward
+
+
+# TODO
+@Variable.convert_input_into_variable
+def loss_mse(
+    predicted: Variable, target: Variable | numeric | Iterable[numeric]
+) -> Variable:
+    """
+    Mean Squared Error Loss between predicted and target variables.
+    """
+    mean_squared_error = Variable(((predicted.value - target.value) ** 2).mean())
+    normalization_const = Variable.constant(1.0 / predicted.size)
+
+    inputs = (predicted,)  # the target is a constant so skip it here
+    outputs = (mean_squared_error,)
+    def back_fn(dLoss_dOutputs):
+        # ignore the factor of 2
+        (dLoss_dOutput,) = dLoss_dOutputs
+        dLoss_dInput = dLoss_dOutputs[0] * normalization_const.broadcast_to(predicted.shape),
+        return (dLoss_dInput,)
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return mean_squared_error
+
+
+@Variable.convert_input_into_variable
+def loss_NLL(log_probs: Variable, target_indices: Variable) -> Variable:
+    """
+    Negative Log-Likelihood Loss for classification tasks.
+
+    :param log_probs: Log probabilities from the model (output of log_softmax).
+    :param target_indices: Truth class indices.
+    :return: NLL loss variable.
+    """
+    n_samples = log_probs.value.shape[0]
+    nll_values = -log_probs.value[range(n_samples), target_indices]
+    nll_loss = Variable(nll_values.sum() * (1.0 / n_samples))
+    return nll_loss
+
 
 def grad(
     loss_variable: Variable,
