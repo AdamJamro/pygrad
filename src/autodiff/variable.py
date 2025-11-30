@@ -32,7 +32,7 @@ from numpy import (
     zeros,
     tanh,
     maximum,
-    log,
+    log, subtract, square, mean,
 )
 from numpy.lib._stride_tricks_impl import as_strided, broadcast_to
 from numpy.ma.core import allclose
@@ -152,9 +152,8 @@ class Variable:
     def __add__(self, other: Variable | numeric):
         return operator_add(self, other)
 
-    @convert_input_into_variable
     def __radd__(self, other: Variable | numeric):
-        return operator_add(self, other)
+        return self + other
 
     @convert_input_into_variable
     def __neg__(self, other: Variable | numeric):
@@ -170,14 +169,20 @@ class Variable:
 
     @convert_input_into_variable
     def __mul__(self, other: Variable | numeric):
+        if TYPE_SAFE:
+            if self.shape != other.shape:
+                other = self.broadcast_to(self.shape)
         return operator_mul(self, other)
 
-    @convert_input_into_variable
     def __rmul__(self, other: Variable | numeric):
-        return operator_mul(self, other)
+        # elementwise multiplication forced commutative
+        return self * other
 
     @convert_input_into_variable
     def __matmul__(self, other: Variable | ndarray):
+        if TYPE_SAFE:
+            if other.ndim == 1:
+                other = other.reshape_as_matrix()
         return operator_matmul(self, other)
 
     @convert_input_into_variable
@@ -190,11 +195,14 @@ class Variable:
     def pad(self, pad_width: Sequence[tuple[int, int]]) -> Variable:
         return operator_pad(self, pad_width=pad_width)
 
-    def sum(self, axis: tuple[int, ...] | int | None = None) -> Variable:
-        return operator_sum(self, axis=axis)
+    def sum(self, axis: tuple[int, ...] | int | None = None, keepdims = False) -> Variable:
+        return operator_sum(self, axis=axis, keepdims=keepdims)
 
-    def broadcast_to(self, _shape) -> Variable:
-        return operator_broadcast_to(self, _shape=_shape)
+    def broadcast_to(self, shape) -> Variable:
+        return operator_broadcast_to(self, broadcast_shap=shape)
+
+    def reshape(self, shape) -> Variable:
+        return operator_reshape(self, new_shape=shape)
 
     @property
     def shape(self):
@@ -342,17 +350,30 @@ def operator_matmul(matrix: Variable, vector: Variable) -> Variable:
     forward = Variable(matrix.value @ vector.value)
     inputs = (matrix, vector)
     outputs = (forward,)
+    if TYPE_SAFE:
+        if vector.ndim == 1:
+            raise ValueError("vectors must be explicitly padded with an extra dimension. Reshape as (..., n, 1)")
+
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dMatmulResult,) = dLoss_dOutputs
-        if TYPE_SAFE:
-            assert dLoss_dMatmulResult.value.shape == forward.value.shape, (
-                f"Shape mismatch in matmul backward pass: "
-                f"dLoss_dMatmulResult shape {dLoss_dMatmulResult.value.shape} != forward shape {forward.value.shape}"
-            )
 
-        dLoss_dMatrix = dLoss_dMatmulResult @ vector.T
-        dLoss_dVector = matrix.T @ dLoss_dMatmulResult
+        matrix_T = matrix.T
+        dLoss_dVector = matrix_T @ dLoss_dMatmulResult
+        match vector.ndim:
+            case 1:
+                raise ValueError("Forbidden matrix-vector multiplication in backward pass. "
+                                 "Explicitly shape vector to (..., n, 1).")
+            case 2:
+                dLoss_dMatrix = dLoss_dMatmulResult @ vector.T
+            case 3:
+                # TODO vector.T should be batch aware
+                batched_dLoss_dMatrix = dLoss_dMatmulResult @ vector.T
+                # remove unnecessary batch dimension
+                dLoss_dMatrix = batched_dLoss_dMatrix.sum(axis=tuple(range(vector.ndim - 2)))
+            case _:
+                raise ValueError("Matrix multiplication supports only 1D and 2D vectors.")
+
         dLoss_dInputs = (dLoss_dMatrix, dLoss_dVector)
         return dLoss_dInputs
 
@@ -416,7 +437,7 @@ def operator_pad(matrix: Variable, pad_width: Sequence[tuple[int, int]]) -> Vari
 
 
 # TODO debug
-def operator_broadcast_to(tensor: Variable, _shape) -> Variable:
+def operator_broadcast_to(tensor: Variable, broadcast_shap) -> Variable:
     """
     Broadcasts the array variable to the given shape
     equivalent to numpy.broadcast_to
@@ -424,7 +445,7 @@ def operator_broadcast_to(tensor: Variable, _shape) -> Variable:
     Beware this function uses numpy's view under the hood
     so the result of this operator must remain immutable.
     """
-    forward = Variable(broadcast_to(tensor.value, shape=_shape))
+    forward = Variable(broadcast_to(tensor.value, shape=broadcast_shap))
 
     inputs = (tensor,)
     outputs = (forward,)
@@ -461,20 +482,43 @@ def operator_broadcast_to(tensor: Variable, _shape) -> Variable:
     return forward
 
 
+def operator_reshape(tensor: Variable, new_shape) -> Variable:
+    """
+    Reshape tensor using numpy.reshape
+    """
+    forward = Variable(tensor.value.reshape(new_shape))
+    inputs = (tensor,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dResult,) = dLoss_dOutputs
+        dLoss_dInput = dLoss_dResult.reshape(tensor.shape)
+        dLoss_dInputs = (dLoss_dInput,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
+
+
 def operator_sum(
-    tensor: Variable, axis: tuple[int, ...] | int | None = None
+    tensor: Variable,
+    axis: tuple[int, ...] | int | None = None,
+    keepdims: bool = False,
 ) -> Variable:
     """
     Sums the elements of the tensor along the specified axis.
     If axis is None, sums all elements.
     """
-    forward = Variable(tensor.value.sum(axis=axis))
+    forward = Variable(tensor.value.sum(axis=axis, keepdims=keepdims))
 
     inputs = (tensor,)
     outputs = (forward,)
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dSumResult,) = dLoss_dOutputs
+        # without expand_dims this may crash, but it is no bug, we disallow such broadcasting in this version
         dLoss_dTensor = dLoss_dSumResult.broadcast_to(tensor.shape)
         dLoss_dInputs = (dLoss_dTensor,)
         return dLoss_dInputs
@@ -722,7 +766,7 @@ def activation_log_softmax(var: Variable, axis: int = -1):
     return forward
 
 
-# TODO
+# TODO debug
 @Variable.convert_input_into_variable
 def loss_mse(
     predicted: Variable, target: Variable | numeric | Iterable[numeric]
@@ -730,31 +774,35 @@ def loss_mse(
     """
     Mean Squared Error Loss between predicted and target variables.
     """
-    mean_squared_error = Variable(((predicted.value - target.value) ** 2).mean())
+    n_samples = predicted.shape[0]
+
+    err = subtract(predicted.value, target.value)
+    mse_value = array(mean(square(err)))
+    mse = Variable(mse_value)
     normalization_const = Variable.constant(1.0 / predicted.size)
 
-    inputs = (predicted,)  # the target is a constant so skip it here
-    outputs = (mean_squared_error,)
+    inputs = (predicted,)  # the target is a constant, so skip it here
+    outputs = (mse,)
     def back_fn(dLoss_dOutputs):
-        # ignore the factor of 2
         (dLoss_dOutput,) = dLoss_dOutputs
-        dLoss_dInput = dLoss_dOutputs[0] * normalization_const.broadcast_to(predicted.shape),
+        # ignore the factor of 2
+        dLoss_dInput = dLoss_dOutput * err * normalization_const.broadcast_to(predicted.shape),
         return (dLoss_dInput,)
 
     global _tape_stack
     _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
 
-    return mean_squared_error
+    return mse
 
 
 @Variable.convert_input_into_variable
-def loss_NLL(log_probs: Variable, target_indices: Variable) -> Variable:
+def loss_NLL(log_probs: Variable, target_probs: Variable) -> Variable:
     """
     Negative Log-Likelihood Loss for classification tasks.
 
     :param log_probs: Log probabilities from the model (output of log_softmax).
-    :param target_indices: Truth class indices.
-    :return: NLL loss variable.
+    :param target_probs: True underlying probability indices (class labels).
+    :return: NLL loss variable. Combined with log_softmax gives cross-entropy loss.
     """
     n_samples = log_probs.value.shape[0]
     nll_values = -log_probs.value[range(n_samples), target_indices]
