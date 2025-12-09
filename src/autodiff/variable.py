@@ -204,7 +204,7 @@ class Variable:
         return operator_sum(self, axis=axis, keepdims=keepdims)
 
     def broadcast_to(self, shape) -> Variable:
-        return operator_broadcast_to(self, broadcast_shap=shape)
+        return operator_broadcast_to(self, broadcast_shape=shape)
 
     def reshape(self, shape) -> Variable:
         return operator_reshape(self, new_shape=shape)
@@ -381,9 +381,9 @@ def operator_matmul(matrix: Variable, vector: Variable) -> Variable:
                 dLoss_dMatrix = dLoss_dMatmulResult @ vector.T
             case 3:
                 # TODO vector.T should be batch aware
-                batched_dLoss_dMatrix = dLoss_dMatmulResult @ vector.transpose()
-                # remove unnecessary batch dimension
-                dLoss_dMatrix = batched_dLoss_dMatrix.sum(axis=tuple(range(vector.ndim - 2)))
+                batched_dLoss_dMatrix = dLoss_dMatmulResult @ vector.transpose((0, 2, 1))
+                # remove unnecessary batch dimensions
+                dLoss_dMatrix = batched_dLoss_dMatrix.sum(axis=0)
             case _:
                 raise ValueError("Matrix multiplication supports only 1D and 2D vectors.")
 
@@ -450,7 +450,7 @@ def operator_pad(matrix: Variable, pad_width: Sequence[tuple[int, int]]) -> Vari
 
 
 # TODO debug
-def operator_broadcast_to(tensor: Variable, broadcast_shap) -> Variable:
+def operator_broadcast_to(tensor: Variable, broadcast_shape) -> Variable:
     """
     Broadcasts the array variable to the given shape
     equivalent to numpy.broadcast_to
@@ -458,7 +458,7 @@ def operator_broadcast_to(tensor: Variable, broadcast_shap) -> Variable:
     Beware this function uses numpy's view under the hood
     so the result of this operator must remain immutable.
     """
-    forward = Variable(broadcast_to(tensor.value, shape=broadcast_shap))
+    forward = Variable(broadcast_to(tensor.value, shape=broadcast_shape))
 
     inputs = (tensor,)
     outputs = (forward,)
@@ -531,7 +531,7 @@ def operator_sum(
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dSumResult,) = dLoss_dOutputs
-        # without expand_dims this may crash, but it is no bug, we disallow such broadcasting in this version
+        # without expand_dims this may crash, but it is no bug, this version disallows such sum/broadcasting
         dLoss_dTensor = dLoss_dSumResult.broadcast_to(tensor.shape)
         dLoss_dInputs = (dLoss_dTensor,)
         return dLoss_dInputs
@@ -655,10 +655,12 @@ def operator_convolution(matrix: Variable, kernel: Variable):
         # Gradient w.r.t. input matrix, magically equal to:
         # convolution between padded dLoss_dConvResult and a rotated kernel by 180 degrees
         kernel_flipped = kernel.flip()
-        pad_height = kernel.value.shape[0] - 1
-        pad_width = kernel.value.shape[1] - 1
+        pad_dims = [dim_length - 1 for dim_length in kernel.value.shape]
+        # pad_height = kernel.value.shape[0] - 1
+        # pad_width = kernel.value.shape[1] - 1
         padded_conv_result = dLoss_dConvResult.pad(
-            ((pad_height, pad_height), (pad_width, pad_width))
+            # ((pad_height, pad_height), (pad_width, pad_width))
+            [(pad_length, pad_length) for pad_length in pad_dims]
         )
         dLoss_dMatrix = padded_conv_result.convolve(kernel_flipped)
 

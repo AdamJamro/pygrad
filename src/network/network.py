@@ -98,3 +98,15 @@ class Linear(Network):
         # todo reduce 2 operations into one by special operator_lin_step(w, b, x)
         alpha = self.weight @ x + self.bias
         return alpha
+
+
+
+class Conv2d(Network):
+    def __init__(self, kernel_size):
+        super().__init__()
+        self.kernel = Variable(random((kernel_size, kernel_size)))
+        self.bias = Variable(random((1,)))
+
+    def forward(self, x: Variable) -> Variable:
+        return x.convolve(kernel=self.kernel) + self.bias
+
