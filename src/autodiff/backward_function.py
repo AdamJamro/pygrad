@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Callable
+from typing import Callable, Sequence
 
 from src.autodiff.variable import Variable
 
@@ -26,14 +26,14 @@ class BackFunction:
 
     def __init__(
         self,
-        back_fn: Callable[[tuple[Variable | None, ...]], tuple[Variable, ...]],
+        back_fn: Callable[[Sequence[Variable | None]], Sequence[Variable]],
         custom_name: str | None,
     ):
         self.back_fn = back_fn
         self.name = custom_name or _fresh_backward_fn_name("custom")
 
     @abstractmethod
-    def __call__(self, arguments: tuple[Variable | None, ...]) -> tuple[Variable, ...]:
+    def __call__(self, arguments: Sequence[Variable | None]) -> Sequence[Variable]:
         """
         if an argument variable is None it means we didn't reach it before the loss in which respect we do the backward pass
         :param arguments:

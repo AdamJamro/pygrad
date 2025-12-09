@@ -19,6 +19,7 @@ import functools
 from functools import lru_cache
 from typing import Iterable, Sequence, TypeAlias, Any, Callable, Literal
 
+import numpy as np
 from numpy import (
     ndarray,
     array,
@@ -85,15 +86,16 @@ def reset_name_ids():
 numeric: TypeAlias = int | float | ndarray
 
 
-def operator_transpose(var: Variable):
-    forward = Variable(var.value.T)
+def operator_transpose(var: Variable, axes: Sequence[int] | None = None) -> Variable:
+    forward = Variable(var.value.transpose(axes))
 
     inputs = (var,)
     outputs = (forward,)
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dTransposedResult,) = dLoss_dOutputs
-        dLoss_dVar = dLoss_dTransposedResult.T
+        inv_axes = tuple(np.argsort(axes))
+        dLoss_dVar = dLoss_dTransposedResult.transpose(axes=inv_axes)
         dLoss_dInputs = (dLoss_dVar,)
         return dLoss_dInputs
 
@@ -130,7 +132,7 @@ class Variable:
                 converted: Variable
                 match raw_other:
                     case ndarr if isinstance(ndarr, ndarray):
-                        # TODO check supported dimensions
+                        # TODO maybe check supported dimensions
                         converted_args.append(Variable(raw_other))
                     case raw_numeric if isinstance(raw_numeric, (int, float)):
                         converted_args.append(Variable.constant(raw_numeric))
@@ -182,15 +184,18 @@ class Variable:
     def __matmul__(self, other: Variable | ndarray):
         if TYPE_SAFE:
             if other.ndim == 1:
-                other = other.reshape_as_matrix()
+                other = other.reshape_vec_as_mat()
         return operator_matmul(self, other)
 
     @convert_input_into_variable
     def __rmatmul__(self, other: Variable | ndarray):
         return operator_matmul(other, self)
 
-    def flip(self) -> Variable:
-        return operator_flip(self)
+    def reshape_vec_as_mat(self):
+        return self.reshape((*self.shape, 1))
+
+    def flip(self, **kwargs) -> Variable:
+        return operator_flip(self, **kwargs)
 
     def pad(self, pad_width: Sequence[tuple[int, int]]) -> Variable:
         return operator_pad(self, pad_width=pad_width)
@@ -209,8 +214,15 @@ class Variable:
         return self.value.shape
 
     @property
+    def dtype(self):
+        return self.value.dtype
+
+    @property
     def T(self) -> Variable:
         return operator_transpose(self)
+
+    def transpose(self, axes=None) -> Variable:
+        return operator_transpose(self, axes)
 
     @property
     def ndim(self):
@@ -253,7 +265,7 @@ class Variable:
     ) -> dict[Variable, Variable]:
         """Convenience method to compute gradients of this variable with respect to all other variables in the graph."""
         global _tape_stack
-        return grad(self, directional_grad=directional_grad, tape_records=_tape_stack)
+        return grad(self, custom_entry_gradient=directional_grad, tape_records=_tape_stack)
 
 
 @lru_cache(maxsize=None)
@@ -263,7 +275,7 @@ def _ONES(arr_shape: int | Iterable[int], dtype=None) -> Variable:
 
     Thus this should never be a learnable parameter (must stay immutable)
     """
-    return Variable(ones(arr_shape, dtype=dtype))
+    return Variable(ones(arr_shape, dtype=dtype).view())
 
 
 @lru_cache(maxsize=None)
@@ -273,7 +285,7 @@ def _ZEROS(arr_shape: int | Iterable[int], dtype=None) -> Variable:
 
     Thus this should never be a learnable parameter (must stay immutable)
     """
-    return Variable(zeros(arr_shape, dtype=dtype))
+    return Variable(zeros(arr_shape, dtype=dtype).view())
 
 
 def operator_add(var1: Variable, var2: Variable) -> Variable:
@@ -350,10 +362,11 @@ def operator_matmul(matrix: Variable, vector: Variable) -> Variable:
     forward = Variable(matrix.value @ vector.value)
     inputs = (matrix, vector)
     outputs = (forward,)
-    if TYPE_SAFE:
-        if vector.ndim == 1:
+    if vector.ndim == 1:
+        if TYPE_SAFE:
             raise ValueError("vectors must be explicitly padded with an extra dimension. Reshape as (..., n, 1)")
-
+        else:
+            vector = vector.reshape_vec_as_mat()
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dMatmulResult,) = dLoss_dOutputs
@@ -368,7 +381,7 @@ def operator_matmul(matrix: Variable, vector: Variable) -> Variable:
                 dLoss_dMatrix = dLoss_dMatmulResult @ vector.T
             case 3:
                 # TODO vector.T should be batch aware
-                batched_dLoss_dMatrix = dLoss_dMatmulResult @ vector.T
+                batched_dLoss_dMatrix = dLoss_dMatmulResult @ vector.transpose()
                 # remove unnecessary batch dimension
                 dLoss_dMatrix = batched_dLoss_dMatrix.sum(axis=tuple(range(vector.ndim - 2)))
             case _:
@@ -397,7 +410,7 @@ def operator_flip(matrix: Variable, **kwargs) -> Variable:
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dRotatedResult,) = dLoss_dOutputs
-        dLoss_dMatrix = dLoss_dRotatedResult.flip()
+        dLoss_dMatrix = dLoss_dRotatedResult.flip(**kwargs)
         dLoss_dInputs = (dLoss_dMatrix,)
         return dLoss_dInputs
 
@@ -814,8 +827,8 @@ def grad(
     loss_variable: Variable,
     *,
     tape_records=None,
-    directional_grad: Variable | None = None,
-    # desired_results: Sequence[Variable] | None = None,
+    custom_entry_gradient: Variable | None = None,
+    desired_results: Sequence[Variable] | None = None,
 ) -> dict[Variable, Variable]:
     """
     Computes gradients of the loss_variable with respect to each Variable in the computation graph,
@@ -841,9 +854,9 @@ def grad(
     if tape_records is None:
         tape_records = get_tape_stack_snapshot()
     dLoss_d: dict[Variable, Variable] = {
-        loss_variable: Variable(ones_like(loss_variable.value))
-        if directional_grad is None
-        else directional_grad
+        loss_variable: _ONES(loss_variable.shape, loss_variable.dtype)
+        if custom_entry_gradient is None
+        else custom_entry_gradient
     }
 
     def prune_unused_outputs(

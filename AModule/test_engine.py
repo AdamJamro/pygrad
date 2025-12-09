@@ -3,7 +3,7 @@ Tests for the autograd engine.
 """
 
 import math
-from pygrad.engine import Value
+from pygrad_obsolete.engine import Value
 
 
 class TestValueBasicOperations:

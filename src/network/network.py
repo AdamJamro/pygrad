@@ -69,8 +69,22 @@ class Network(abc.ABC):
             ),
         )
 
+    def subnetworks(self, recurse=True) -> Iterable['Network']:
+        return chain(
+            self._subnetworks,
+            (
+                sub_subnetwork
+                for subnetwork in self._subnetworks
+                for sub_subnetwork in subnetwork.subnetworks(recurse=recurse)
+            ),
+        )
+
 
 class Linear(Network):
+    """
+    Ready to use linear subnetwork implementation
+    equivalent to Wx+b linear step
+    """
     def __init__(self, in_features_length: int, out_features_length: int):
         super().__init__()
         self.weight = Variable(random((out_features_length, in_features_length)))
