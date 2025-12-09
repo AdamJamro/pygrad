@@ -90,23 +90,28 @@ class Linear(Network):
         self.weight = Variable(random((out_features_length, in_features_length)))
         self.bias = Variable(
             random(
-                out_features_length,
+                (out_features_length, 1)
             )
         )
 
     def forward(self, x: Variable) -> Variable:
         # todo reduce 2 operations into one by special operator_lin_step(w, b, x)
-        alpha = self.weight @ x + self.bias
-        return alpha
-
+        return self.weight @ x + self.bias
 
 
 class Conv2d(Network):
     def __init__(self, kernel_size):
         super().__init__()
         self.kernel = Variable(random((kernel_size, kernel_size)))
-        self.bias = Variable(random((1,)))
 
     def forward(self, x: Variable) -> Variable:
-        return x.convolve(kernel=self.kernel) + self.bias
+        return Variable.convolve(x, kernel=self.kernel)
 
+
+class Conv(Network):
+    def __init__(self, kernel_size):
+        super().__init__()
+        self.kernel = Variable(random((kernel_size,)))
+
+    def forward(self, x: Variable) -> Variable:
+        return Variable.convolve(x, kernel=self.kernel)

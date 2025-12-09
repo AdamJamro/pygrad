@@ -94,7 +94,7 @@ def operator_transpose(var: Variable, axes: Sequence[int] | None = None) -> Vari
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dTransposedResult,) = dLoss_dOutputs
-        inv_axes = tuple(np.argsort(axes))
+        inv_axes = tuple(np.argsort(axes)) if axes is not None else None
         dLoss_dVar = dLoss_dTransposedResult.transpose(axes=inv_axes)
         dLoss_dInputs = (dLoss_dVar,)
         return dLoss_dInputs
@@ -380,7 +380,6 @@ def operator_matmul(matrix: Variable, vector: Variable) -> Variable:
             case 2:
                 dLoss_dMatrix = dLoss_dMatmulResult @ vector.T
             case 3:
-                # TODO vector.T should be batch aware
                 batched_dLoss_dMatrix = dLoss_dMatmulResult @ vector.transpose((0, 2, 1))
                 # remove unnecessary batch dimensions
                 dLoss_dMatrix = batched_dLoss_dMatrix.sum(axis=0)
