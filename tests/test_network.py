@@ -1,4 +1,6 @@
-from network.network import Network, Variable, Linear
+import numpy as np
+
+from network.network import Network, Variable, Linear, clear_tape, loss_mse, _tape_stack
 
 
 def test_modularity_params():
@@ -24,19 +26,51 @@ def test_linear_step_in_network():
     class LinearNN(Network):
         def __init__(self):
             super().__init__()
-            self.L1 = Linear(2, 1)
+            self.L1 = Linear(2, 2)
 
         def forward(self, x: Variable) -> Variable:
-            return self.L1(x)
+            return self.L1(x).sum()
 
     lin_nn = LinearNN()
-    input_var = Variable([3.0, 4.0])
-    output_var = lin_nn.forward(input_var)
+    input_var = Variable(np.array([[3.0], [4.0]]))
+    input_var_2 = Variable(np.array([[1.0], [2.0]]))
 
-    assert output_var.shape == (1,)
+    for step in range(50):
+        history = []
+        for i in range(10):
+            out = lin_nn.forward(input_var)
+            loss = out.sum()
+            history.append(loss.value)
+            grad = loss.backward()
+            for p in lin_nn.parameters():
+                p.value -= 0.02 * grad[p]
+            clear_tape()
+
+        print()
+        print(history)
+        history = []
+        for i in range(10):
+            out = lin_nn.forward(input_var_2)
+            loss = out.sum()
+            history.append(loss.value)
+            grad = loss.backward()
+            for p in lin_nn.parameters():
+                p.value += 0.05 * grad[p]
+            clear_tape()
+        print()
+        print(history)
+
+        print(f'epoch {step} minimizing:{lin_nn(input_var)}')
+        print(f'epoch {step} maximizing:{lin_nn(input_var_2)}')
+
+
+    print()
+    print(history)
+    assert history
     assert set(lin_nn.parameters()) == set(lin_nn._parameters).union(
         set(lin_nn.L1._parameters)
     )  # 2 weights + 1
+
 
 
 def test_mlp_network():
@@ -45,9 +79,9 @@ def test_mlp_network():
     class MLP(Network):
         def __init__(self):
             super().__init__()
-            self.L1 = Linear(5, 3)
-            self.L2 = Linear(3, 4)
-            self.L3 = Linear(4, 2)
+            self.L1 = Linear(3, 2)
+            self.L2 = Linear(2, 5)
+            self.L3 = Linear(5, 2)
 
         def forward(self, x: Variable) -> Variable:
             x = Variable.ReLU(self.L1(x))
@@ -65,10 +99,61 @@ def test_mlp_network():
 
     print()
     print()
-    input_var = Variable([3.0, 4.0])
-    output_var = lin_nn.forward(input_var)
+    input_var = Variable(np.array([[3.0], [4.0], [5.0]]))
+    target_var = Variable(np.array([[10.0], [0.0]]))
 
-    assert output_var.shape == (1,)
-    assert set(lin_nn.parameters()) == set(lin_nn._parameters).union(
-        set(lin_nn.L1._parameters)
-    )  # 2 weights + 1
+    history = []
+    for i in range(100):
+        out = mlp.forward(input_var)
+        loss = loss_mse(out, target_var)
+        history.append(loss.value)
+        grad = loss.backward()
+        for p in mlp.parameters():
+            p.value -= 0.05 * grad[p]
+        clear_tape()
+    print()
+    print(history)
+
+
+
+def test_mlp_network_mse():
+    """Test integration of a simple linear neural network."""
+
+    class MLP(Network):
+        def __init__(self):
+            super().__init__()
+            self.L1 = Linear(3, 2)
+            self.L2 = Linear(2, 5)
+            self.L3 = Linear(5, 2)
+
+        def forward(self, x: Variable) -> Variable:
+            x = Variable.ReLU(self.L1(x))
+            x = Variable.ReLU(self.L2(x))
+            return self.L3(x)
+
+
+    mlp = MLP()
+    print()
+    print(list(mlp.parameters()))
+    print()
+    print(list(mlp.subnetworks()))
+    print()
+    print(list(mlp.L1.parameters()))
+
+    print()
+    print()
+    input_var = Variable(np.array([[3.0], [4.0], [5.0]]))
+    target_var = Variable(np.array([[10.0], [0.0]]))
+
+    history = []
+    for i in range(100):
+        out = mlp.forward(input_var)
+        loss = loss_ase(out, target_var)
+        history.append(loss.value)
+        grad = loss.backward()
+        for p in mlp.parameters():
+            p.value -= 0.05 * grad[p]
+        clear_tape()
+    print()
+    print(history)
+

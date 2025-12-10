@@ -171,9 +171,9 @@ class Variable:
 
     @convert_input_into_variable
     def __mul__(self, other: Variable | numeric):
-        if TYPE_SAFE:
-            if self.shape != other.shape:
-                other = self.broadcast_to(self.shape)
+        # if TYPE_SAFE:
+        #     if self.shape != other.shape:
+        #         other = self.broadcast_to(self.shape)
         return operator_mul(self, other)
 
     def __rmul__(self, other: Variable | numeric):
@@ -182,8 +182,10 @@ class Variable:
 
     @convert_input_into_variable
     def __matmul__(self, other: Variable | ndarray):
-        if TYPE_SAFE:
-            if other.ndim == 1:
+        if other.ndim == 1:
+            if TYPE_SAFE:
+                raise ValueError("vectors must be explicitly padded with an extra dimension. Reshape as (..., n, 1)")
+            else:
                 other = other.reshape_vec_as_mat()
         return operator_matmul(self, other)
 
@@ -219,7 +221,7 @@ class Variable:
 
     @property
     def T(self) -> Variable:
-        return operator_transpose(self)
+        return operator_transpose(self, None)
 
     def transpose(self, axes=None) -> Variable:
         return operator_transpose(self, axes)
@@ -262,10 +264,10 @@ class Variable:
 
     def backward(
         self, directional_grad: Variable | None = None
-    ) -> dict[Variable, Variable]:
+    ) -> dict[Variable, ndarray]:
         """Convenience method to compute gradients of this variable with respect to all other variables in the graph."""
         global _tape_stack
-        return grad(self, custom_entry_gradient=directional_grad, tape_records=_tape_stack)
+        return {key: var.value for key, var in grad(self, custom_entry_gradient=directional_grad, tape_records=_tape_stack).items()}
 
 
 @lru_cache(maxsize=None)
@@ -362,11 +364,6 @@ def operator_matmul(matrix: Variable, vector: Variable) -> Variable:
     forward = Variable(matrix.value @ vector.value)
     inputs = (matrix, vector)
     outputs = (forward,)
-    if vector.ndim == 1:
-        if TYPE_SAFE:
-            raise ValueError("vectors must be explicitly padded with an extra dimension. Reshape as (..., n, 1)")
-        else:
-            vector = vector.reshape_vec_as_mat()
 
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dMatmulResult,) = dLoss_dOutputs
@@ -791,16 +788,16 @@ def loss_mse(
     n_samples = predicted.shape[0]
 
     err = subtract(predicted.value, target.value)
-    mse_value = array(mean(square(err)))
+    err_variable = Variable(err)
+    mse_value = array(np.sum(square(err)))
     mse = Variable(mse_value)
-    normalization_const = Variable.constant(1.0 / predicted.size)
 
     inputs = (predicted,)  # the target is a constant, so skip it here
     outputs = (mse,)
     def back_fn(dLoss_dOutputs):
         (dLoss_dOutput,) = dLoss_dOutputs
         # ignore the factor of 2
-        dLoss_dInput = dLoss_dOutput * err * normalization_const.broadcast_to(predicted.shape),
+        dLoss_dInput = (dLoss_dOutput * err_variable).broadcast_to(predicted.shape)
         return (dLoss_dInput,)
 
     global _tape_stack
@@ -880,7 +877,7 @@ def grad(
         # the automatic topological sorting of the tape ensures we use the final dLoss_d[tape_input] value
         # only when it was fully computed
         for tape_input, dL_dInput in zip(tape_record.inputs, dLoss_dInputs):
-            # we could have used defaultdict(lambda x:zeros) but this way we keep the notion of what was used in the process
+            # we could have used default(lambda x:zeros) but this way we keep the notion of what was used in the process
             if tape_input not in dLoss_d:
                 dLoss_d[tape_input] = dL_dInput
             else:

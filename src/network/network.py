@@ -5,7 +5,7 @@ from typing import Sequence, Iterable
 
 from numpy.random import random
 
-from autodiff.variable import Variable
+from autodiff.variable import Variable, clear_tape, loss_mse, loss_NLL, _tape_stack
 
 
 class Network(abc.ABC):
