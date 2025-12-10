@@ -1,5 +1,6 @@
 import numpy as np
 
+from autodiff.variable import loss_NLL
 from network.network import Network, Variable, Linear, clear_tape, loss_mse, loss_mae, _tape_stack, Conv, Conv2d
 
 
@@ -244,23 +245,83 @@ def test_class_predictor():
             self.L3 = Linear(6, 2)
 
         def forward(self, x: Variable) -> Variable:
-            x = Variable.tanh(self.L1(x))
-            x = Variable.tanh(self.L2(x))
-            return Variable.logsoftmax(self.L3(x))
+            x = Variable.ReLU(self.L1(x))
+            x = Variable.ReLU(self.L2(x))
+            return Variable.log_softmax(self.L3(x), axis=0)
 
 
-    mlp = Predictor()
+    pred = Predictor()
     input_var = Variable(np.array([[3.0], [4.0], [5.0]]))
-    target_var = Variable(np.array([[10.0], [0.0]]))
+    target_var = Variable(np.array([[1.0], [0.0]]))
 
     history = []
     for i in range(100):
-        out = mlp.forward(input_var)
+        out = pred.forward(input_var)
         loss = loss_mse(out, target_var)
         history.append(loss.value)
         grad = loss.backward()
-        for p in mlp.parameters():
-            p.value -= 0.05 * grad[p]
+        for p in pred.parameters():
+            p.value -= 0.01 * grad[p]
+        clear_tape()
+    print()
+    print(history)
+
+
+def test_nll_loss():
+
+    class Predictor2(Network):
+        def __init__(self):
+            super().__init__()
+            self.L1 = Linear(3, 5)
+            self.L2 = Linear(5, 6)
+            self.L3 = Linear(6, 4)
+
+        def forward(self, x: Variable) -> Variable:
+            x = Variable.ReLU(self.L1(x))
+            x = Variable.ReLU(self.L2(x))
+            return Variable.log_softmax(self.L3(x), axis=0)
+
+
+    pred2 = Predictor2()
+    input_var = Variable(np.array([[3.0], [4.0], [5.0]]))
+    target_var = Variable(np.array([[1.0], [0.0], [0.0], [0.0]]))
+
+    history = []
+    for i in range(100):
+        out = pred2.forward(input_var)
+        loss = loss_NLL(out, target_var)
+        history.append(loss.value)
+        grad = loss.backward()
+        for p in pred2.parameters():
+            p.value -= 0.001 * grad[p]
+        clear_tape()
+    print()
+    print(history)
+
+
+def test_convolutional_network():
+    class ConvNet(Network):
+        def __init__(self):
+            super().__init__()
+            self.conv = Conv(8)
+            self.L1 = Linear(16, 10)
+
+        def forward(self, x: Variable) -> Variable:
+            return self.L1(Variable.ReLU(self.conv(x).reshape_vec_as_mat()))
+
+
+    conv_net = ConvNet()
+    input_var = Variable(np.random.randn(16 + 8 - 1))
+    target_var = Variable(np.random.randn(10,1))
+
+    history = []
+    for i in range(50):
+        out = conv_net.forward(input_var)
+        loss = loss_mse(out, target_var)
+        history.append(loss.value)
+        grad = loss.backward()
+        for p in conv_net.parameters():
+            p.value -= 0.01 * grad[p]
         clear_tape()
     print()
     print(history)

@@ -204,6 +204,9 @@ class Variable:
     def sum(self, axis: tuple[int, ...] | int | None = None, keepdims = False) -> Variable:
         return operator_sum(self, axis=axis, keepdims=keepdims)
 
+    def exp(self):
+        return operator_exp(self)
+
     def broadcast_to(self, shape) -> Variable:
         return operator_broadcast_to(self, broadcast_shape=shape)
 
@@ -241,8 +244,9 @@ class Variable:
                 "convolution arguments dimensionality must match."
             )
             assert (
-                matrix.value.shape[0] > kernel.value.shape[0]
-                and matrix.value.shape[1] > kernel.value.shape[1]
+                all(matrix_shape > kernel_shape
+                    for matrix_shape, kernel_shape in
+                    zip(matrix.value.shape, kernel.value.shape))
             ), (
                 "Kernel size must be smaller than input size for convolution. Use elementwise multiplication instead."
             )
@@ -262,7 +266,7 @@ class Variable:
         return activation_tanh(variable)
 
     @staticmethod
-    def lsoftmax(variable: Variable, axis: int = -1) -> Variable:
+    def log_softmax(variable: Variable, axis: int = -1) -> Variable:
         """
         Computes log_softmax(x) = log(softmax(x)) = x - log(sum(exp(x)))
         see the variable.activation_log_softmax() for more info
@@ -518,6 +522,23 @@ def operator_reshape(tensor: Variable, new_shape) -> Variable:
     return forward
 
 
+def operator_exp(tensor: Variable) -> Variable:
+    forward = Variable(exp(tensor.value))
+    inputs = (tensor,)
+    outputs = (forward,)
+
+    def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
+        (dLoss_dExpResult,) = dLoss_dOutputs
+        dLoss_dTensor = dLoss_dExpResult * forward
+        dLoss_dInputs = (dLoss_dTensor,)
+        return dLoss_dInputs
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return forward
+
+
 def operator_sum(
     tensor: Variable,
     axis: tuple[int, ...] | int | None = None,
@@ -551,6 +572,7 @@ def _stream2windows(stream: ndarray, window_length: shape) -> ndarray:
     Assumes no padding and left/right sliding stride of 1.
     """
     (stream_length,) = stream.shape
+    (window_length,) = window_length
     output_length = stream_length - window_length + 1
 
     sliding_windows_shape = (output_length, window_length)
@@ -665,11 +687,11 @@ def operator_convolution(matrix: Variable, kernel: Variable):
             # ((pad_height, pad_height), (pad_width, pad_width))
             [(pad_length, pad_length) for pad_length in pad_dims]
         )
-        dLoss_dMatrix = padded_conv_result.convolve(kernel_flipped)
+        dLoss_dMatrix = Variable.convolve(padded_conv_result, kernel_flipped)
 
         # Gradient w.r.t. kernel magically equal to:
         # convolution between input matrix and dLoss_dConvResult
-        dLoss_dKernel = matrix.convolve(dLoss_dConvResult)
+        dLoss_dKernel = Variable.convolve(matrix, dLoss_dConvResult)
 
         dLoss_dInputs = (dLoss_dMatrix, dLoss_dKernel)
         return dLoss_dInputs
@@ -771,10 +793,13 @@ def activation_log_softmax(var: Variable, axis: int = -1):
     def back_fn(dLoss_dOutputs: Sequence[Variable]) -> Sequence[Variable]:
         (dLoss_dResult,) = dLoss_dOutputs
         # Jacobian matrix for log_softmax is complex but gives more control over the learning process
-        dLoss_dInput = (
-            dLoss_dResult.broadcast_to((*var.shape, *dLoss_dResult.shape)) @ -forward
-            + dLoss_dResult
-        )
+        # dLoss_dInput = (
+        #     dLoss_dResult.broadcast_to((*var.shape, *dLoss_dResult.shape)) @ -forward
+        #     + dLoss_dResult
+        # )
+        softmax = forward.exp()
+        sum_over_axis = dLoss_dResult.sum(axis=axis, keepdims=True)
+        dLoss_dInput = dLoss_dResult - (softmax * sum_over_axis)
         dLoss_dInputs = (dLoss_dInput,)
         return dLoss_dInputs
 
@@ -791,7 +816,7 @@ def loss_mse(
     Mean Squared Error Loss between predicted and target variables.
     """
 
-    err = subtract(predicted.value, target.value) # swap for simlicity
+    err = subtract(predicted.value, target.value) # swap for simplicity
     err_variable = Variable(err)
     mse_value = array(np.sum(square(err)))
     mse = Variable(mse_value)
@@ -828,7 +853,7 @@ def loss_mae(
     def back_fn(dLoss_dOutputs):
         (dLoss_dOutput,) = dLoss_dOutputs
         # note that mae may bug the higher order gradients
-        dLoss_dInput = Variable(np.sign(predicted.value - target.value)) * dLoss_dOutput
+        dLoss_dInput = Variable(np.sign(err)) * dLoss_dOutput
         return (dLoss_dInput,)
 
     global _tape_stack
@@ -847,9 +872,8 @@ def loss_NLL(log_probs: Variable, target_probs: Variable) -> Variable:
     :param target_probs: True underlying probability indices (class labels).
     :return: NLL loss variable. Combined with log_softmax gives cross-entropy loss.
     """
-    n_samples = log_probs.value.shape[0]
-    nll_values = -log_probs.value[range(n_samples), target_indices]
-    nll_loss = Variable(nll_values.sum() * (1.0 / n_samples))
+    nll_values = -log_probs * target_probs
+    nll_loss = nll_values.sum()
     return nll_loss
 
 
