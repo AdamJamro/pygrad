@@ -157,8 +157,7 @@ class Variable:
     def __radd__(self, other: Variable | numeric):
         return self + other
 
-    @convert_input_into_variable
-    def __neg__(self, other: Variable | numeric):
+    def __neg__(self):
         return operator_neg(self)
 
     @convert_input_into_variable
@@ -261,6 +260,14 @@ class Variable:
     @staticmethod
     def tanh(variable: Variable):
         return activation_tanh(variable)
+
+    @staticmethod
+    def lsoftmax(variable: Variable, axis: int = -1) -> Variable:
+        """
+        Computes log_softmax(x) = log(softmax(x)) = x - log(sum(exp(x)))
+        see the variable.activation_log_softmax() for more info
+        """
+        return activation_log_softmax(variable, axis=axis)
 
     def backward(
         self, directional_grad: Variable | None = None
@@ -776,8 +783,6 @@ def activation_log_softmax(var: Variable, axis: int = -1):
 
     return forward
 
-
-# TODO debug
 @Variable.convert_input_into_variable
 def loss_mse(
     predicted: Variable, target: Variable | numeric | Iterable[numeric]
@@ -785,9 +790,8 @@ def loss_mse(
     """
     Mean Squared Error Loss between predicted and target variables.
     """
-    n_samples = predicted.shape[0]
 
-    err = subtract(predicted.value, target.value)
+    err = subtract(predicted.value, target.value) # swap for simlicity
     err_variable = Variable(err)
     mse_value = array(np.sum(square(err)))
     mse = Variable(mse_value)
@@ -804,6 +808,34 @@ def loss_mse(
     _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
 
     return mse
+
+
+@Variable.convert_input_into_variable
+def loss_mae(
+    predicted: Variable, target: Variable | numeric | Iterable[numeric]
+) -> Variable:
+    """
+    Mean Absolute Error Loss between predicted and target variables.
+    """
+
+    err = subtract(predicted.value, target.value)
+    err_variable = Variable(err)
+    mae_value = array(np.sum(np.abs(err)))
+    mae = Variable(mae_value)
+
+    inputs = (predicted,)  # the target is a constant, so skip it here
+    outputs = (mae,)
+    def back_fn(dLoss_dOutputs):
+        (dLoss_dOutput,) = dLoss_dOutputs
+        # note that mae may bug the higher order gradients
+        dLoss_dInput = Variable(np.sign(predicted.value - target.value)) * dLoss_dOutput
+        return (dLoss_dInput,)
+
+    global _tape_stack
+    _tape_stack.append(Tape(outputs=outputs, inputs=inputs, back_fn=back_fn))
+
+    return mae
+
 
 
 @Variable.convert_input_into_variable
