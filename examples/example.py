@@ -7,8 +7,8 @@ This example demonstrates:
 3. Using the autograd engine for gradient computation
 """
 
-from pygrad import Value, MLP
-from pygrad.nn import mse_loss
+from pygrad_obsolete import Value, MLP
+from pygrad_obsolete.nn import mse_loss
 
 
 def simple_autograd_example():

@@ -30,34 +30,46 @@ pip install -e ".[dev]"
 ### Basic Autograd Example
 
 ```python
-from pygrad import Value
+from autodiff import Variable
 
 # Create computational graph
-x = Value(3.0)
-y = Value(2.0)
+x = Variable(3.0)
+y = Variable(2.0)
 z = (x + y) * (x - y)
 
 # Compute gradients
-z.backward()
+dL_d = z.backward()
 
-print(f"z = {z.data}")  # z = 5.0
-print(f"∂z/∂x = {x.grad}")  # ∂z/∂x = 4.0
-print(f"∂z/∂y = {y.grad}")  # ∂z/∂y = 0.0
+print(f"z = {dL_d[z]}")  # z = 5.0
+print(f"∂z/∂x = {dL_d[x]}")  # ∂z/∂x = 4.0
+print(f"∂z/∂y = {dL_d[y]}")  # ∂z/∂y = 0.0
 ```
 
 ### Neural Network Example
 
 ```python
-from pygrad import Value, MLP
-from pygrad.nn import mse_loss
+from network import Network, Variable, Linear, mse_loss, ReLU
 
 # Create a Multi-Layer Perceptron
 # Architecture: 2 inputs -> 4 hidden neurons -> 1 output
-mlp = MLP(2, [4, 1], activation='relu')
+class MLP(Network):
+    def __init__(self, input_size, hidden_sizes, output_size):
+        super().__init__()
+        layer_sizes = [input_size] + hidden_sizes + [output_size]
+        for i in range(len(layer_sizes) - 1):
+            self._subnetworks.append(Linear(layer_sizes[i], layer_sizes[i+1]))
+            self._subnetworks.append(ReLU())
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+    
+mlp = MLP(2, [4, 1])
 
 # Training data
-X = [[Value(0.0), Value(1.0)], [Value(1.0), Value(0.0)]]
-y = [Value(1.0), Value(1.0)]
+X = [[Variable(0.0), Variable(1.0)], [Variable(1.0), Variable(0.0)]]
+y = [Variable(1.0), Variable(1.0)]
 
 # Training loop
 for epoch in range(100):
@@ -95,7 +107,7 @@ The `Value` class is the core of the autograd engine. It wraps scalar values and
 A single neuron with weights, bias, and activation function.
 
 ```python
-from pygrad.nn import Neuron
+from pygrad_obsolete.nn import Neuron
 
 neuron = Neuron(nin=3, activation='relu')
 output = neuron([Value(1.0), Value(2.0), Value(3.0)])
@@ -105,7 +117,7 @@ output = neuron([Value(1.0), Value(2.0), Value(3.0)])
 A layer of multiple neurons.
 
 ```python
-from pygrad.nn import Layer
+from pygrad_obsolete.nn import Layer
 
 layer = Layer(nin=3, nout=4, activation='relu')
 outputs = layer([Value(1.0), Value(2.0), Value(3.0)])
@@ -115,7 +127,7 @@ outputs = layer([Value(1.0), Value(2.0), Value(3.0)])
 A complete neural network with multiple layers.
 
 ```python
-from pygrad import MLP
+from pygrad_obsolete import MLP
 
 # Create network: 2 inputs -> 8 hidden -> 4 hidden -> 1 output
 mlp = MLP(2, [8, 4, 1], activation='tanh')
@@ -124,7 +136,7 @@ mlp = MLP(2, [8, 4, 1], activation='tanh')
 ### Loss Functions
 
 ```python
-from pygrad.nn import mse_loss, binary_cross_entropy
+from pygrad_obsolete.nn import mse_loss, binary_cross_entropy
 
 # Mean Squared Error
 loss = mse_loss(predictions, targets)
@@ -159,7 +171,7 @@ PyGrad implements reverse-mode automatic differentiation (backpropagation):
 ### Example: Understanding the Computational Graph
 
 ```python
-from pygrad import Value
+from pygrad_obsolete import Value
 
 a = Value(2.0, label='a')
 b = Value(3.0, label='b')

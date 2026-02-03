@@ -2,8 +2,8 @@
 Tests for neural network components.
 """
 
-from pygrad.engine import Value
-from pygrad.nn import Neuron, Layer, MLP, mse_loss, binary_cross_entropy
+from pygrad_obsolete.engine import Value
+from pygrad_obsolete.nn import Neuron, Layer, MLP, mse_loss, binary_cross_entropy
 
 
 class TestNeuron:

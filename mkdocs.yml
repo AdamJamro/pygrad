@@ -1,0 +1,68 @@
+site_name: Autograd
+site_description: "A Python machine learning library with automatic differentiation"
+site_author: Adam Jamrozisnki
+repo_url: https://github.com/adamJamro/pygrad
+repo_name: autograd
+
+
+nav:
+#  - Home: index.md
+#  - Guide:
+#      - Introduction: guide/introduction.md
+#      - Usage: guide/usage.md
+  - API Reference: api.md
+
+#theme:
+#  name: material   # or 'mkdocs', 'readthedocs', etc.
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - content.code.copy
+    - toc.integrate
+  palette:
+    - scheme: default
+    - scheme: slate
+      primary: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - toc:
+      permalink: true
+  - footnotes
+  - attr_list
+  - tables
+  - md_in_html
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            separate_signature: true
+            show_signature_annotations: true
+            show_signature_type_parameters: true
+            show_root_full_path: true
+            show_source: false
+            docstring_style: google
+            members_order: alphabetical
+            filters:
+              - "!^hide_this_"
+              - "^__"
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/adamJamro/pygrad
+#    - icon: fontawesome/brands/python
+#      link: https://pypi.org/project/library/
