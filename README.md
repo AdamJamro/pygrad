@@ -2,10 +2,10 @@
 
 A lightweight autodiff engine with implementing backpropagation (reverse-mode autodiff) over a dynamically built DAG. Equipped in a simple neural network interface on top (PyTorch-like API).
 
-All operators are optimized for vectorized calculations (ndarray nodes keep track of jacobians instead of scalars). Some operators are capable of handling tensors. This project's purpose is to aid prototyping or learning about backprop.
-The entire implementation has less than 1000 lines of code, and relies only on numpy.
+All operators are optimized for vectorized calculations (ndarray nodes keep track of jacobians instead of scalars). Some operators are capable of handling tensors. This project's purpose is to aid prototyping or learning about the backprop algorithm.
+The implementation relies only on numpy.
 
-Automatic differentiation is based on tape-stack that auto-magically handles topological sort of the DAG.
+Automatic differentiation is based on tape-stack that auto-magically handles topological sorting of the DAG.
 
 ## Features
 
