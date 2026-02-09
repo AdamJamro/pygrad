@@ -1,7 +1,6 @@
 # PyGrad
 
-A lightweight autodiff (reverse-mode) engine with simple neural network interface on top of it (PyTorch-like API). 
-Implements backpropagation (reverse-mode autodiff) over a dynamically built DAG and a small neural networks library.
+A lightweight autodiff engine with implementing backpropagation (reverse-mode autodiff) over a dynamically built DAG. Equipped in a simple neural network interface on top (PyTorch-like API).
 
 All operators are optimized for vectorized calculations (ndarray nodes keep track of jacobians instead of scalars). Some operators are capable of handling tensors. This project's purpose is to aid prototype or learn about autodiff.
 The entire implementation has less than 1000 lines of code, and relies only on numpy.
