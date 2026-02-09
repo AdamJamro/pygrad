@@ -1,15 +1,21 @@
 # PyGrad
 
-A lightweight neural network library with automatic differentiation (autograd) and symbolic gradient calculation, implemented in pure Python.
+A lightweight autodiff (reverse-mode) engine with simple neural network interface on top of it (PyTorch-like API). 
+Implements backpropagation (reverse-mode autodiff) over a dynamically built DAG and a small neural networks library.
+
+All operators are optimized for vectorized calculations (ndarray nodes keep track of jacobians instead of scalars). Some operators are capable of handling tensors. This project's purpose is to aid prototype or learn about autodiff.
+The entire implementation has less than 1000 lines of code, and relies only on numpy.
+
+Automatic differentiation is based on tape-stack that auto-magically handles topological sort of the DAG.
 
 ## Features
 
 - **Autograd Engine**: Automatic differentiation through computational graph tracking
-- **Symbolic Gradient Calculation**: Computes gradients symbolically using backpropagation
-- **Neural Network Building Blocks**: Neurons, Layers, and Multi-Layer Perceptrons (MLPs)
-- **Activation Functions**: ReLU, Tanh, Sigmoid
-- **Loss Functions**: MSE, Binary Cross Entropy
-- **Pure Python**: No external dependencies for core functionality
+- **Neural Network Building Blocks**: Multi-Layer Perceptrons (MLPs), Convolutional Layers 
+- **Pure Python**: implementation based on numpy's interface for fortran/C-speed mp.arrays multiplication
+- **Easy to extend**: the backprop algo is fixed, simply stash more operators to extend the functionality. 
+New operators need to adhere engine's api, there are many examples of already implemented operators. 
+
 
 ## Installation
 
@@ -35,14 +41,14 @@ from autodiff import Variable
 # Create computational graph
 x = Variable(3.0)
 y = Variable(2.0)
-z = (x + y) * (x - y)
+z = (x + y) * (x - y) # any function using predefined operators
 
 # Compute gradients
-dL_d = z.backward()
+dz_d = z.backward()
 
-print(f"z = {dL_d[z]}")  # z = 5.0
-print(f"∂z/∂x = {dL_d[x]}")  # ∂z/∂x = 4.0
-print(f"∂z/∂y = {dL_d[y]}")  # ∂z/∂y = 0.0
+print(f"∂z/∂x = {dz_d[z]}")  # ∂z/∂z = 1.0
+print(f"∂z/∂x = {dz_d[x]}")  # ∂z/∂x = 6.0
+print(f"∂z/∂y = {dz_d[y]}")  # ∂z/∂y = -4.0
 ```
 
 ### Neural Network Example
@@ -98,8 +104,7 @@ The `Value` class is the core of the autograd engine. It wraps scalar values and
 
 **Supported Operations:**
 - Arithmetic: `+`, `-`, `*`, `/`, `**`
-- Activation functions: `relu()`, `tanh()`, `sigmoid()`
-- Mathematical functions: `exp()`, `log()`
+- Activation functions: `relu()`, `tanh()`, `sigmoid()`, ...
 
 ### Neural Network Components
 
@@ -200,61 +205,12 @@ print(f"c.grad = {c.grad}")  # 1.0
 pygrad/
 ├── __init__.py       # Package initialization
 ├── engine.py         # Autograd engine (Value class)
-└── nn.py            # Neural network components (Neuron, Layer, MLP)
+└── variable.py            # Neural network components (Neuron, Layer, MLP)
 
 tests/
-├── test_engine.py   # Tests for autograd engine
-└── test_nn.py       # Tests for neural network components
-
 examples/
-└── example.py       # Example usage and demonstrations
 ```
-
-## Testing
-
-Run the test suite:
-
-```bash
-# Install pytest if not already installed
-pip install pytest
-
-# Run all tests
-pytest tests/
-
-# Run with coverage
-pip install pytest-cov
-pytest tests/ --cov=pygrad --cov-report=html
-```
-
-## Limitations
-
-- **Scalars Only**: Works with scalar values, not tensors/matrices
-- **No GPU Support**: Pure Python implementation, CPU only
-- **Educational Purpose**: Designed for learning, not production use
-- **Limited Optimizers**: Only manual gradient descent is demonstrated
-
-## Inspiration
-
-PyGrad is inspired by:
-- [micrograd](https://github.com/karpathy/micrograd) by Andrej Karpathy
-- PyTorch's autograd system
-- The neural networks and deep learning course materials
 
 ## License
 
 MIT License - See LICENSE file for details
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Future Enhancements
-
-Potential improvements:
-- Tensor support for batch operations
-- Additional optimizers (Adam, RMSprop, etc.)
-- Convolutional layers
-- Recurrent layers
-- Regularization techniques
-- Batch normalization
-- Dropout
